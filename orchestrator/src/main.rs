@@ -73,6 +73,62 @@ fn prompt_i32(label: &str, default: i32) -> i32 {
     val.parse().unwrap_or(default)
 }
 
+// ─── Run config persistence ───────────────────────────────────────────────────
+
+/// Write run_config.json into `logs_dir` so every run folder is self-documenting.
+fn save_run_config(
+    logs_dir: &str,
+    task: &str,
+    dataset: &str,
+    models: &ModelSelection,
+    hp: &Hparams,
+    project_root: &str,
+) {
+    // Derive the run_id from the parent of logs_dir (e.g. run_20260906_123456)
+    let run_id = Path::new(logs_dir)
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut selected: Vec<&str> = Vec::new();
+    if models.yolo    { selected.push("yolo11m-seg"); }
+    if models.maskrcnn  { selected.push("maskrcnn"); }
+    if models.fastrcnn  { selected.push("fastrcnn"); }
+
+    let config = serde_json::json!({
+        "run_id":          run_id,
+        "task":            task,
+        "started_at":      Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "project_root":    project_root,
+        "dataset":         dataset,
+        "models_selected": selected,
+        "hyperparameters": {
+            "yolo": {
+                "epochs":  hp.yolo_epochs,
+                "batch":   hp.yolo_batch,
+                "workers": hp.yolo_workers,
+            },
+            "maskrcnn": {
+                "epochs":  hp.mrcnn_epochs,
+                "batch":   hp.mrcnn_batch,
+                "workers": hp.mrcnn_workers,
+            },
+            "fastrcnn": {
+                "epochs":  hp.fastrcnn_epochs,
+                "batch":   hp.fastrcnn_batch,
+                "workers": hp.fastrcnn_workers,
+            },
+        }
+    });
+
+    let out_path = format!("{}/run_config.json", logs_dir);
+    match fs::write(&out_path, serde_json::to_string_pretty(&config).unwrap_or_default()) {
+        Ok(_)  => println!("[OK] Run config saved → {}", out_path),
+        Err(e) => eprintln!("[WARN] Could not save run_config.json: {}", e),
+    }
+}
+
 // ─── Subprocess execution (live logging) ─────────────────────────────────────
 
 /// Spawn a command, stream its stdout/stderr to terminal AND a log file line-by-line.
@@ -556,6 +612,7 @@ fn main() {
             let models  = collect_models();
             let hparams = collect_hparams();
             let dataset = run_dataset_prep(&logs_dir, &project_root);
+            save_run_config(&logs_dir, "Train Model", &dataset, &models, &hparams, &project_root);
             println!("\n[INFO] Using dataset: {}", dataset);
             let all_metrics = run_training(&models, &hparams, &dataset, &base_out_dir, &logs_dir, &project_root);
             println!("\nAll training done. Generating Excel report...");
@@ -586,6 +643,7 @@ fn main() {
             let models  = collect_models();
             let hparams = collect_hparams();
             let dataset = run_dataset_prep(&logs_dir, &project_root);
+            save_run_config(&logs_dir, "Full Pipeline (Prep → Train → Evaluate)", &dataset, &models, &hparams, &project_root);
             println!("\n[INFO] Using dataset: {}", dataset);
             let all_metrics = run_training(&models, &hparams, &dataset, &base_out_dir, &logs_dir, &project_root);
             run_evaluation(&dataset, &base_out_dir, &logs_dir, &project_root);
