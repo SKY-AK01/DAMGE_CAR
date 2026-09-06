@@ -107,7 +107,7 @@ def load_gpu_recommendations():
     return {}
 
 class Hyperparams:
-    def __init__(self):
+    def __init__(self, models=None):
         recs = load_gpu_recommendations()
 
         def get_default_batch(model_key, fallback):
@@ -120,6 +120,13 @@ class Hyperparams:
                 return recs[model_key]["workers"]
             return fallback
 
+        # Determine which model groups need prompting.
+        # "yolo_group"   covers yolo + yolo11x (same hyperparams, different --model flag)
+        # "m2f_group"    covers mask2former + sam2 + maskdino + segformer (all HuggingFace-style)
+        need_yolo    = models is None or models.yolo or models.yolo11x
+        need_maskrcnn = models is None or models.maskrcnn
+        need_m2f     = models is None or models.mask2former or models.sam2 or models.maskdino or models.segformer
+
         print()
         print("======================================================================")
         if recs:
@@ -128,39 +135,71 @@ class Hyperparams:
             print(" Set training hyperparameters (press Enter to accept defaults)")
         print("======================================================================")
 
-        yolo_default_b = get_default_batch("yolo11m-seg", 8)
-        yolo_default_w = get_default_workers("yolo11m-seg", 8)
-        print("\n---- YOLOv11m-seg ----")
-        self.yolo_epochs = prompt_int("Epochs", 50)
-        self.yolo_batch = prompt_int("Batch size (-1 = auto)", yolo_default_b)
-        self.yolo_workers = prompt_int("Dataloader workers", yolo_default_w)
+        # ── YOLO ──────────────────────────────────────────────────────────────
+        if need_yolo:
+            yolo_default_b = get_default_batch("yolo11m-seg", 8)
+            yolo_default_w = get_default_workers("yolo11m-seg", 8)
+            print("\n---- YOLOv11m-seg ----")
+            self.yolo_epochs  = prompt_int("Epochs", 50)
+            self.yolo_batch   = prompt_int("Batch size (-1 = auto)", yolo_default_b)
+            self.yolo_workers = prompt_int("Dataloader workers", yolo_default_w)
+        else:
+            self.yolo_epochs  = 50
+            self.yolo_batch   = get_default_batch("yolo11m-seg", 8)
+            self.yolo_workers = get_default_workers("yolo11m-seg", 8)
 
-        mrcnn_default_b = get_default_batch("maskrcnn", 2)
-        mrcnn_default_w = get_default_workers("maskrcnn", 4)
-        print("\n---- Mask R-CNN ----")
-        self.mrcnn_epochs = prompt_int("Epochs", 20)
-        self.mrcnn_batch = prompt_int("Batch size", mrcnn_default_b)
-        self.mrcnn_workers = prompt_int("Dataloader workers", mrcnn_default_w)
+        # ── Mask R-CNN ────────────────────────────────────────────────────────
+        if need_maskrcnn:
+            mrcnn_default_b = get_default_batch("maskrcnn", 2)
+            mrcnn_default_w = get_default_workers("maskrcnn", 4)
+            print("\n---- Mask R-CNN ----")
+            self.mrcnn_epochs  = prompt_int("Epochs", 20)
+            self.mrcnn_batch   = prompt_int("Batch size", mrcnn_default_b)
+            self.mrcnn_workers = prompt_int("Dataloader workers", mrcnn_default_w)
+        else:
+            self.mrcnn_epochs  = 20
+            self.mrcnn_batch   = get_default_batch("maskrcnn", 2)
+            self.mrcnn_workers = get_default_workers("maskrcnn", 4)
 
+        # ── Fast R-CNN — always silent default (not in model selection menu) ──
         fastrcnn_default_b = get_default_batch("fastrcnn", 2)
         fastrcnn_default_w = get_default_workers("fastrcnn", 4)
-        print("\n---- Fast R-CNN ----")
-        self.fastrcnn_epochs = prompt_int("Epochs", 20)
-        self.fastrcnn_batch = prompt_int("Batch size", fastrcnn_default_b)
-        self.fastrcnn_workers = prompt_int("Dataloader workers", fastrcnn_default_w)
+        self.fastrcnn_epochs  = 20
+        self.fastrcnn_batch   = fastrcnn_default_b
+        self.fastrcnn_workers = fastrcnn_default_w
 
-        m2f_default_b = get_default_batch("mask2former", 2)
-        m2f_default_w = get_default_workers("mask2former", 4)
-        print("\n---- Mask2Former (Swin Transformer) ----")
-        self.m2f_epochs = prompt_int("Epochs", 20)
-        self.m2f_batch = prompt_int("Batch size", m2f_default_b)
-        self.m2f_workers = prompt_int("Dataloader workers", m2f_default_w)
+        # ── Mask2Former / SAM2 / MaskDINO / SegFormer ────────────────────────
+        if need_m2f:
+            m2f_default_b = get_default_batch("mask2former", 2)
+            m2f_default_w = get_default_workers("mask2former", 4)
+            # Label the section after whichever model is actually selected
+            if models and models.mask2former:
+                label = "Mask2Former (Swin Transformer)"
+            elif models and models.sam2:
+                label = "SAM2 Fine-Tuned"
+            elif models and models.maskdino:
+                label = "MaskDINO"
+            elif models and models.segformer:
+                label = "SegFormer"
+            else:
+                label = "Mask2Former / SAM2 / MaskDINO / SegFormer"
+            print(f"\n---- {label} ----")
+            self.m2f_epochs  = prompt_int("Epochs", 20)
+            self.m2f_batch   = prompt_int("Batch size", m2f_default_b)
+            self.m2f_workers = prompt_int("Dataloader workers", m2f_default_w)
+        else:
+            self.m2f_epochs  = 20
+            self.m2f_batch   = get_default_batch("mask2former", 2)
+            self.m2f_workers = get_default_workers("mask2former", 4)
 
+        # ── Summary: only show selected models ────────────────────────────────
         print("\n---- Summary ----")
-        print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}")
-        print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}")
-        print(f"  Fast R-CNN   : epochs={self.fastrcnn_epochs}  batch={self.fastrcnn_batch}  workers={self.fastrcnn_workers}")
-        print(f"  Mask2Former  : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}")
+        if need_yolo:
+            print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}")
+        if need_maskrcnn:
+            print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}")
+        if need_m2f:
+            print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}")
         print("-----------------")
 
 def run_cmd_and_log(cmd, log_path, label):
@@ -467,7 +506,7 @@ def main():
     elif choice == "2":
         print("\n[TASK] Dataset Prep & Local Model Training")
         models = collect_models()
-        hparams = Hyperparams()
+        hparams = Hyperparams(models)
         dataset = run_dataset_prep(logs_dir)
         save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
         print(f"\n[INFO] Using dataset: {dataset}")
@@ -510,7 +549,7 @@ def main():
     elif choice == "4":
         print("\n[TASK] Full Pipeline (Prep -> Train -> Evaluate)")
         models = collect_models()
-        hparams = Hyperparams()
+        hparams = Hyperparams(models)
         dataset = run_dataset_prep(logs_dir)
         save_run_config(logs_dir, "Full Pipeline (Prep → Train → Evaluate)", dataset, models, hparams)
         print(f"\n[INFO] Using dataset: {dataset}")
@@ -527,7 +566,7 @@ def main():
     elif choice == "5":
         print("\n[TASK] Automated Azure ML Training")
         models = collect_models()
-        hparams = Hyperparams()
+        hparams = Hyperparams(models)
         local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
         save_run_config(logs_dir, "Azure ML Training", dataset=local_dir, models=models, hparams=hparams,
                         extra={"mode": "azure"})
