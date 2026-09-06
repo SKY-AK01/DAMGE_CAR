@@ -190,12 +190,22 @@ class UnifiedEvaluator:
                     # Compute pixel metrics only for matches if prediction has masks
                     p_mask = best_pred.get('segmentation')
                     if p_mask is not None:
-                        intersection = np.logical_and(gt_mask, p_mask).sum()
-                        union = np.logical_or(gt_mask, p_mask).sum()
+                        # gt_mask is at native image resolution (from annToMask).
+                        # p_mask from Mask R-CNN is at the model's fixed input size (e.g. 640x640).
+                        # Resize prediction mask to ground-truth resolution before comparison.
+                        p_mask_arr = np.asarray(p_mask)
+                        if gt_mask.shape != p_mask_arr.shape:
+                            p_mask_arr = cv2.resize(
+                                p_mask_arr.astype(np.uint8),
+                                (gt_mask.shape[1], gt_mask.shape[0]),  # cv2 takes (W, H)
+                                interpolation=cv2.INTER_NEAREST
+                            ).astype(bool)
+                        intersection = np.logical_and(gt_mask, p_mask_arr).sum()
+                        union = np.logical_or(gt_mask, p_mask_arr).sum()
                         if union > 0:
                             m_iou = intersection / union
-                            dice = (2 * intersection) / (gt_mask.sum() + p_mask.sum())
-                            b_iou = compute_boundary_iou(gt_mask, p_mask)
+                            dice = (2 * intersection) / (gt_mask.sum() + p_mask_arr.sum())
+                            b_iou = compute_boundary_iou(gt_mask, p_mask_arr)
                             
                             total_mask_iou += m_iou
                             total_dice += dice
@@ -332,10 +342,18 @@ class UnifiedEvaluator:
             
             # Prediction
             pred_img = img.copy()
+            img_h, img_w = img.shape[:2]
             for pred in preds:
                 if pred['score'] < 0.25:
                     continue
-                mask = pred['segmentation']
+                mask = np.asarray(pred['segmentation'])
+                # Resize prediction mask to display image resolution if needed
+                if mask.shape != (img_h, img_w):
+                    mask = cv2.resize(
+                        mask.astype(np.uint8),
+                        (img_w, img_h),
+                        interpolation=cv2.INTER_NEAREST
+                    )
                 color = np.random.randint(0, 255, (3,), dtype=np.uint8)
                 pred_img[mask > 0] = pred_img[mask > 0] * 0.5 + color * 0.5
             axs[2].imshow(pred_img.astype(np.uint8))

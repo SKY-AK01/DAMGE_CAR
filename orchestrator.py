@@ -59,11 +59,10 @@ def display_main_menu():
     print("======================================================================")
 
 class ModelSelection:
-    def __init__(self, yolo=False, yolo11x=False, maskrcnn=False, fastrcnn=False, mask2former=False, sam2=False, maskdino=False, segformer=False):
+    def __init__(self, yolo=False, yolo11x=False, maskrcnn=False, mask2former=False, sam2=False, maskdino=False, segformer=False):
         self.yolo = yolo
         self.yolo11x = yolo11x
         self.maskrcnn = maskrcnn
-        self.fastrcnn = fastrcnn
         self.mask2former = mask2former
         self.sam2 = sam2
         self.maskdino = maskdino
@@ -108,7 +107,7 @@ def load_gpu_recommendations():
     return {}
 
 class Hyperparams:
-    def __init__(self, models=None):
+    def __init__(self):
         recs = load_gpu_recommendations()
 
         def get_default_batch(model_key, fallback):
@@ -129,45 +128,40 @@ class Hyperparams:
             print(" Set training hyperparameters (press Enter to accept defaults)")
         print("======================================================================")
 
-        if models is None or getattr(models, "yolo", False):
-            yolo_default_b = get_default_batch("yolo11m-seg", 8)
-            yolo_default_w = get_default_workers("yolo11m-seg", 4)
-            print("\n---- YOLOv11m-seg ----")
-            self.yolo_epochs = prompt_int("Epochs", 50)
-            self.yolo_batch = prompt_int("Batch size (-1 = auto)", yolo_default_b)
-            self.yolo_workers = prompt_int("Dataloader workers", yolo_default_w)
+        yolo_default_b = get_default_batch("yolo11m-seg", 8)
+        yolo_default_w = get_default_workers("yolo11m-seg", 8)
+        print("\n---- YOLOv11m-seg ----")
+        self.yolo_epochs = prompt_int("Epochs", 50)
+        self.yolo_batch = prompt_int("Batch size (-1 = auto)", yolo_default_b)
+        self.yolo_workers = prompt_int("Dataloader workers", yolo_default_w)
 
-        if models is None or getattr(models, "yolo11x", False):
-            yolo11x_default_b = get_default_batch("yolo11x-seg", 8)
-            yolo11x_default_w = get_default_workers("yolo11x-seg", 4)
-            print("\n---- YOLO11x-seg (Extra Large) ----")
-            self.yolo11x_epochs = prompt_int("Epochs", 50)
-            self.yolo11x_batch = prompt_int("Batch size (-1 = auto)", yolo11x_default_b)
-            self.yolo11x_workers = prompt_int("Dataloader workers", yolo11x_default_w)
+        mrcnn_default_b = get_default_batch("maskrcnn", 2)
+        mrcnn_default_w = get_default_workers("maskrcnn", 4)
+        print("\n---- Mask R-CNN ----")
+        self.mrcnn_epochs = prompt_int("Epochs", 20)
+        self.mrcnn_batch = prompt_int("Batch size", mrcnn_default_b)
+        self.mrcnn_workers = prompt_int("Dataloader workers", mrcnn_default_w)
 
-        if models is None or getattr(models, "maskrcnn", False):
-            mrcnn_default_b = get_default_batch("maskrcnn", 2)
-            mrcnn_default_w = get_default_workers("maskrcnn", 4)
-            print("\n---- Mask R-CNN ----")
-            self.mrcnn_epochs = prompt_int("Epochs", 20)
-            self.mrcnn_batch = prompt_int("Batch size", mrcnn_default_b)
-            self.mrcnn_workers = prompt_int("Dataloader workers", mrcnn_default_w)
+        fastrcnn_default_b = get_default_batch("fastrcnn", 2)
+        fastrcnn_default_w = get_default_workers("fastrcnn", 4)
+        print("\n---- Fast R-CNN ----")
+        self.fastrcnn_epochs = prompt_int("Epochs", 20)
+        self.fastrcnn_batch = prompt_int("Batch size", fastrcnn_default_b)
+        self.fastrcnn_workers = prompt_int("Dataloader workers", fastrcnn_default_w)
 
-        if models is None or getattr(models, "fastrcnn", False):
-            fastrcnn_default_b = get_default_batch("fastrcnn", 2)
-            fastrcnn_default_w = get_default_workers("fastrcnn", 4)
-            print("\n---- Fast R-CNN ----")
-            self.fastrcnn_epochs = prompt_int("Epochs", 20)
-            self.fastrcnn_batch = prompt_int("Batch size", fastrcnn_default_b)
-            self.fastrcnn_workers = prompt_int("Dataloader workers", fastrcnn_default_w)
+        m2f_default_b = get_default_batch("mask2former", 2)
+        m2f_default_w = get_default_workers("mask2former", 4)
+        print("\n---- Mask2Former (Swin Transformer) ----")
+        self.m2f_epochs = prompt_int("Epochs", 20)
+        self.m2f_batch = prompt_int("Batch size", m2f_default_b)
+        self.m2f_workers = prompt_int("Dataloader workers", m2f_default_w)
 
-        if models is None or getattr(models, "mask2former", False):
-            m2f_default_b = get_default_batch("mask2former", 2)
-            m2f_default_w = get_default_workers("mask2former", 4)
-            print("\n---- Mask2Former (Swin Transformer) ----")
-            self.m2f_epochs = prompt_int("Epochs", 20)
-            self.m2f_batch = prompt_int("Batch size", m2f_default_b)
-            self.m2f_workers = prompt_int("Dataloader workers", m2f_default_w)
+        print("\n---- Summary ----")
+        print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}")
+        print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}")
+        print(f"  Fast R-CNN   : epochs={self.fastrcnn_epochs}  batch={self.fastrcnn_batch}  workers={self.fastrcnn_workers}")
+        print(f"  Mask2Former  : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}")
+        print("-----------------")
 
 def run_cmd_and_log(cmd, log_path, label):
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
@@ -177,13 +171,6 @@ def run_cmd_and_log(cmd, log_path, label):
         lf.write(f"Command: {' '.join(cmd)}\n\n")
 
     print(f"\n[*] Running [{label}] ...")
-    # Ensure python child processes stream output line-by-line without buffering
-    if cmd and cmd[0] == "python" and (len(cmd) == 1 or cmd[1] != "-u"):
-        cmd = ["python", "-u"] + cmd[1:]
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-
     proc = subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
@@ -192,8 +179,7 @@ def run_cmd_and_log(cmd, log_path, label):
         text=True,
         bufsize=1,
         encoding="utf-8",
-        errors="replace",
-        env=env
+        errors="replace"
     )
 
     GPU_REC_MARKER = "[GPU_RECOMMENDATIONS_JSON]"
@@ -382,6 +368,79 @@ def analyze_dataset(dataset_name="combined_carparts"):
 def run_dataset_prep(logs_dir):
     return ensure_and_prepare_datasets(logs_dir)
 
+
+def save_run_config(logs_dir, task_name, dataset, models=None, hparams=None, extra=None):
+    """
+    Write run_config.json into logs_dir so you always know what settings
+    were used for any given run folder.
+
+    Structure:
+        run_config.json
+        {
+          "run_id":    "run_20260906_123456",
+          "task":      "Train Model Locally",
+          "started_at": "2026-09-06 12:34:56",
+          "dataset":   "combined_carparts",
+          "models_selected": ["maskrcnn", "yolo11m-seg"],
+          "hyperparameters": {
+            "yolo":     { "epochs": 50, "batch": 8,  "workers": 8  },
+            "maskrcnn": { "epochs": 20, "batch": 2,  "workers": 4  },
+            "fastrcnn": { "epochs": 20, "batch": 2,  "workers": 4  },
+            "mask2former": { "epochs": 20, "batch": 2, "workers": 4 }
+          },
+          ...extra fields...
+        }
+    """
+    run_id = os.path.basename(os.path.dirname(logs_dir))  # e.g. run_20260906_123456
+
+    selected_models = []
+    if models:
+        if getattr(models, "yolo",        False): selected_models.append("yolo11m-seg")
+        if getattr(models, "yolo11x",     False): selected_models.append("yolo11x-seg")
+        if getattr(models, "maskrcnn",    False): selected_models.append("maskrcnn")
+        if getattr(models, "mask2former", False): selected_models.append("mask2former")
+        if getattr(models, "sam2",        False): selected_models.append("sam2")
+        if getattr(models, "maskdino",    False): selected_models.append("maskdino")
+        if getattr(models, "segformer",   False): selected_models.append("segformer")
+
+    hp_dict = {}
+    if hparams:
+        hp_dict = {
+            "yolo":       {"epochs": getattr(hparams, "yolo_epochs",      None),
+                           "batch":  getattr(hparams, "yolo_batch",       None),
+                           "workers":getattr(hparams, "yolo_workers",     None)},
+            "maskrcnn":   {"epochs": getattr(hparams, "mrcnn_epochs",     None),
+                           "batch":  getattr(hparams, "mrcnn_batch",      None),
+                           "workers":getattr(hparams, "mrcnn_workers",    None)},
+            "fastrcnn":   {"epochs": getattr(hparams, "fastrcnn_epochs",  None),
+                           "batch":  getattr(hparams, "fastrcnn_batch",   None),
+                           "workers":getattr(hparams, "fastrcnn_workers", None)},
+            "mask2former":{"epochs": getattr(hparams, "m2f_epochs",       None),
+                           "batch":  getattr(hparams, "m2f_batch",        None),
+                           "workers":getattr(hparams, "m2f_workers",      None)},
+        }
+        # Remove model blocks that were never asked (all-None)
+        hp_dict = {k: v for k, v in hp_dict.items()
+                   if any(val is not None for val in v.values())}
+
+    config = {
+        "run_id":            run_id,
+        "task":              task_name,
+        "started_at":        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset":           dataset,
+        "models_selected":   selected_models,
+        "hyperparameters":   hp_dict,
+    }
+    if extra:
+        config.update(extra)
+
+    config_path = os.path.join(logs_dir, "run_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+    print(f"\n[OK] Run config saved → {config_path}")
+    return config_path
+
+
 def main():
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     base_out_dir = str(PROJECT_ROOT / "runs_comparison" / f"run_{timestamp}")
@@ -399,6 +458,8 @@ def main():
         print("\n[TASK] Auto-annotation (DINO + SAM2)")
         inp = prompt_default("Input images directory", "./RAW_DATASET/IMAGES")
         out = prompt_default("Output directory", "./datasets/auto_annotated")
+        save_run_config(logs_dir, "Auto-annotation", dataset="N/A",
+                        extra={"input_dir": inp, "output_dir": out})
         log_path = os.path.join(logs_dir, "01_annotation.log")
         cmd = ["python", "scripts/inference/auto_annotate_carparts.py", "--input", inp, "--output", out]
         run_cmd_and_log(cmd, log_path, "annotation")
@@ -406,8 +467,9 @@ def main():
     elif choice == "2":
         print("\n[TASK] Dataset Prep & Local Model Training")
         models = collect_models()
-        hparams = Hyperparams(models)
+        hparams = Hyperparams()
         dataset = run_dataset_prep(logs_dir)
+        save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
         print(f"\n[INFO] Using dataset: {dataset}")
         
         if models.yolo:
@@ -419,15 +481,6 @@ def main():
                    "--project", out_dir]
             run_cmd_and_log(cmd, log_path, "train_yolo")
 
-        if getattr(models, 'yolo11x', False):
-            log_path = os.path.join(logs_dir, "02_train_yolo11x.log")
-            out_dir = os.path.join(base_out_dir, "yolo11x-seg")
-            cmd = ["python", "scripts/training/train_yolo_seg.py", "--model", "yolo11x-seg",
-                   "--dataset", dataset, "--epochs", str(hparams.yolo11x_epochs),
-                   "--batch", str(hparams.yolo11x_batch), "--workers", str(hparams.yolo11x_workers),
-                   "--project", out_dir]
-            run_cmd_and_log(cmd, log_path, "train_yolo11x")
-
         if models.maskrcnn:
             log_path = os.path.join(logs_dir, "02_train_maskrcnn.log")
             out_dir = os.path.join(base_out_dir, "maskrcnn")
@@ -436,7 +489,7 @@ def main():
                    "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir]
             run_cmd_and_log(cmd, log_path, "train_maskrcnn")
 
-        if getattr(models, 'fastrcnn', False):
+        if models.fastrcnn:
             log_path = os.path.join(logs_dir, "02_train_fastrcnn.log")
             out_dir = os.path.join(base_out_dir, "fastrcnn")
             cmd = ["python", "scripts/training/train_fastrcnn.py", "--dataset", dataset,
@@ -448,6 +501,8 @@ def main():
         print("\n[TASK] Inference on Test Images")
         inp = prompt_default("Test images directory", "./test")
         out = prompt_default("Output directory", "./test_result")
+        save_run_config(logs_dir, "Inference", dataset="N/A",
+                        extra={"input_dir": inp, "output_dir": out})
         log_path = os.path.join(logs_dir, "01_inference.log")
         cmd = ["python", "scripts/inference/infer_both_models.py", "--input", inp, "--output", out]
         run_cmd_and_log(cmd, log_path, "inference")
@@ -455,8 +510,9 @@ def main():
     elif choice == "4":
         print("\n[TASK] Full Pipeline (Prep -> Train -> Evaluate)")
         models = collect_models()
-        hparams = Hyperparams(models)
+        hparams = Hyperparams()
         dataset = run_dataset_prep(logs_dir)
+        save_run_config(logs_dir, "Full Pipeline (Prep → Train → Evaluate)", dataset, models, hparams)
         print(f"\n[INFO] Using dataset: {dataset}")
         print("[*] Running local training...")
         if models.yolo:
@@ -473,6 +529,8 @@ def main():
         models = collect_models()
         hparams = Hyperparams()
         local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
+        save_run_config(logs_dir, "Azure ML Training", dataset=local_dir, models=models, hparams=hparams,
+                        extra={"mode": "azure"})
 
         all_selected = (models.yolo and models.yolo11x and models.maskrcnn and models.mask2former and models.sam2 and models.maskdino and models.segformer)
         if all_selected:
@@ -560,6 +618,8 @@ def main():
     elif choice == "10":
         print("\n[TASK] Quick Pipeline Check -- Fast 3-Epoch Dry Run on Azure ML (All Models)")
         local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
+        save_run_config(logs_dir, "Quick Pipeline Check (3-epoch dry run)", dataset=local_dir,
+                        extra={"epochs": 3, "batch": "auto(-1)", "workers": 8, "mode": "azure_dryrun"})
         log_path = os.path.join(logs_dir, "00_azure_dryrun_all.log")
         print("[*] Submitting 3-epoch dry-run job for YOLO + Mask R-CNN + Mask2Former...")
         cmd = ["python", "scripts/training/azure_train.py", "--model", "all",
@@ -571,13 +631,10 @@ def main():
         print("\n[TASK] GPU Capacity & Batch Size / Worker Stress Tester")
         mode = prompt_default("Run mode (local / azure)", "local")
         ds = prompt_default("Dataset path", "./datasets/combined_carparts")
-        models_input = prompt_default("Models to test (all / yolo11m-seg / yolo11x-seg / maskrcnn / etc.)", "all")
+        save_run_config(logs_dir, "GPU Capacity Check", dataset=ds,
+                        extra={"mode": mode})
         log_path = os.path.join(logs_dir, "00_capacity_check.log")
-        cmd = ["python", "-u", "scripts/training/capacity_check.py", "--dataset", ds, "--mode", mode]
-        if models_input.strip() and models_input.strip().lower() != "all":
-            selected_models = [m.strip() for m in models_input.replace(",", " ").split() if m.strip()]
-            if selected_models:
-                cmd.extend(["--models"] + selected_models)
+        cmd = ["python", "scripts/training/capacity_check.py", "--dataset", ds, "--mode", mode]
         run_cmd_and_log(cmd, log_path, "capacity_check")
 
     elif choice == "12":

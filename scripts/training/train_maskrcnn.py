@@ -276,8 +276,8 @@ def main():
         epoch_start_time = time.time()
         model.train()
         total_loss = 0
-        num_images = 0
         loss_components = {}
+        num_images = 0
         for batch_idx, (images, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [train]")):
             if args.max_batches and batch_idx >= args.max_batches:
                 break
@@ -305,72 +305,42 @@ def main():
         epoch_time = time.time() - epoch_start_time
         images_sec = num_images / epoch_time
 
-        # Validation (skip when running max_batches micro-benchmark for capacity check)
+        # Mask R-CNN's loss dict is only available in train() mode
+        model.train()
         val_loss = 0
-        val_metrics = None
-        if not args.max_batches:
-            # Mask R-CNN's loss dict is only available in train() mode
-            model.train()
-            with torch.no_grad():
-                for images, targets in val_loader:
-                    images = [img.to(device) for img in images]
-                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                    with torch.cuda.amp.autocast(enabled=use_amp):
-                        loss_dict = model(images, targets)
-                        val_loss += sum(loss_dict.values()).item()
-            avg_val_loss = val_loss / len(val_loader)
-            
-            # Predictions for unified evaluator
-            model.eval()
-            predictions_by_image = {}
-            with torch.no_grad():
-                for images, targets in val_loader:
-                    images = [img.to(device) for img in images]
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images = [img.to(device) for img in images]
+                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    loss_dict = model(images, targets)
+                    val_loss += sum(loss_dict.values()).item()
+        avg_val_loss = val_loss / len(val_loader)
+        
+        # Predictions for unified evaluator
+        model.eval()
+        predictions_by_image = {}
+        with torch.no_grad():
+            for images, targets in val_loader:
+                images = [img.to(device) for img in images]
+                outputs = model(images)
+                for t, o in zip(targets, outputs):
+                    img_id = t["image_id"].item()
+                    preds = []
+                    boxes = o["boxes"].cpu().numpy()
+                    labels = o["labels"].cpu().numpy()
+                    scores = o["scores"].cpu().numpy()
+                    masks = o["masks"].cpu().numpy()
+                    for box, label, score, mask in zip(boxes, labels, scores, masks):
+                        preds.append({
+                            "category_id": int(label) - 1, # undo +1 background
+                            "score": float(score),
+                            "bbox": [float(box[0]), float(box[1]), float(box[2]-box[0]), float(box[3]-box[1])],
+                            "segmentation": (mask[0] > 0.5)
+                        })
+                    predictions_by_image[img_id] = preds
                     
-                    # Fix: Process images one-by-one to avoid huge memory spike 
-                    # during torchvision's paste_masks_in_image post-processing.
-                    outputs = []
-                    for img in images:
-                        with torch.cuda.amp.autocast(enabled=use_amp):
-                            out = model([img])[0]
-                        # Move to CPU immediately to free GPU memory
-                        outputs.append({k: v.cpu() for k, v in out.items()})
-
-                    for t, o in zip(targets, outputs):
-                        img_id = t["image_id"].item()
-                        img_info = val_ds.images_by_id[img_id]
-                        orig_w, orig_h = img_info["width"], img_info["height"]
-                        
-                        preds = []
-                        boxes = o["boxes"].numpy()
-                        labels = o["labels"].numpy()
-                        scores = o["scores"].numpy()
-                        masks = o["masks"].numpy()
-                        for box, label, score, mask in zip(boxes, labels, scores, masks):
-                            pred_h, pred_w = mask[0].shape
-                            scale_x = orig_w / float(pred_w)
-                            scale_y = orig_h / float(pred_h)
-                            
-                            m = (mask[0] > 0.5).astype(np.uint8)
-                            if pred_h != orig_h or pred_w != orig_w:
-                                m = cv2.resize(m, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-                            
-                            x1 = float(box[0]) * scale_x
-                            y1 = float(box[1]) * scale_y
-                            w_box = float(box[2]-box[0]) * scale_x
-                            h_box = float(box[3]-box[1]) * scale_y
-
-                            preds.append({
-                                "category_id": int(label) - 1, # undo +1 background
-                                "score": float(score),
-                                "bbox": [x1, y1, w_box, h_box],
-                                "segmentation": m.astype(bool)
-                            })
-                        predictions_by_image[img_id] = preds
-                        
-            val_metrics = evaluator.evaluate(epoch, predictions_by_image)
-        else:
-            avg_val_loss = 0.0
+        val_metrics = evaluator.evaluate(epoch, predictions_by_image)
         
         train_stats = {
             "train_loss": avg_train_loss,
