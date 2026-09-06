@@ -1,0 +1,34 @@
+# ==============================================================================
+# requirements.txt — pip-installable dependencies only.
+#
+# NOTE: PyTorch is deliberately excluded here — install it separately with the
+# correct CUDA version for your GPU/driver first:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+# NOTE: These packages also need separate git-clone + local install, so they
+# are NOT in this file (see setup_all.sh for the full automated version):
+#   - groundingdino  (clone IDEA-Research/GroundingDINO, then `pip install -e .`)
+#   - sam2           (clone facebookresearch/segment-anything-2, then `pip install -e .`)
+#   - detectron2     (pip install git+https://github.com/facebookresearch/detectron2.git)
+#   - maskdino       (clone IDEA-Research/MaskDINO, then `pip install -r requirements.txt`
+#                      + build CUDA ops via make.sh — GPU machine required)
+#
+# Usage:
+#   pip install -r requirements.txt
+# ==============================================================================
+
+opencv-python
+numpy<2
+pillow
+matplotlib
+requests
+tqdm
+pyyaml
+pycocotools
+supervision
+ultralytics
+azureml-core
+azureml-dataprep
+transformers
+pandas
+openpyxl
