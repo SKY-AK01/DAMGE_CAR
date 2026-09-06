@@ -153,13 +153,15 @@ class Hyperparams:
             mrcnn_default_b = get_default_batch("maskrcnn", 2)
             mrcnn_default_w = get_default_workers("maskrcnn", 4)
             print("\n---- Mask R-CNN ----")
-            self.mrcnn_epochs  = prompt_int("Epochs", 20)
-            self.mrcnn_batch   = prompt_int("Batch size", mrcnn_default_b)
-            self.mrcnn_workers = prompt_int("Dataloader workers", mrcnn_default_w)
+            self.mrcnn_epochs       = prompt_int("Epochs", 20)
+            self.mrcnn_batch        = prompt_int("Batch size", mrcnn_default_b)
+            self.mrcnn_workers      = prompt_int("Dataloader workers", mrcnn_default_w)
+            self.mrcnn_val_interval = prompt_int("Validate every N epochs", 5)
         else:
-            self.mrcnn_epochs  = 20
-            self.mrcnn_batch   = get_default_batch("maskrcnn", 2)
-            self.mrcnn_workers = get_default_workers("maskrcnn", 4)
+            self.mrcnn_epochs       = 20
+            self.mrcnn_batch        = get_default_batch("maskrcnn", 2)
+            self.mrcnn_workers      = get_default_workers("maskrcnn", 4)
+            self.mrcnn_val_interval = 5
 
         # ── Fast R-CNN — always silent default (not in model selection menu) ──
         fastrcnn_default_b = get_default_batch("fastrcnn", 2)
@@ -197,7 +199,7 @@ class Hyperparams:
         if need_yolo:
             print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}")
         if need_maskrcnn:
-            print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}")
+            print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}  val_every={self.mrcnn_val_interval}")
         if need_m2f:
             print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}")
         print("-----------------")
@@ -525,7 +527,8 @@ def main():
             out_dir = os.path.join(base_out_dir, "maskrcnn")
             cmd = ["python", "scripts/training/train_maskrcnn.py", "--dataset", dataset,
                    "--epochs", str(hparams.mrcnn_epochs), "--batch", str(hparams.mrcnn_batch),
-                   "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir]
+                   "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.mrcnn_val_interval)]
             run_cmd_and_log(cmd, log_path, "train_maskrcnn")
 
         if models.fastrcnn:

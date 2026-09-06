@@ -155,6 +155,9 @@ def main():
     parser.add_argument("--no-amp", dest="amp", action="store_false")
     parser.add_argument("--output_dir", default="runs_comparison/maskrcnn")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
+    parser.add_argument("--val_interval", type=int, default=5,
+                        help="Run validation + COCO eval every N epochs (default: 5). "
+                             "Use 1 to validate every epoch (original behaviour).")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -305,42 +308,53 @@ def main():
         epoch_time = time.time() - epoch_start_time
         images_sec = num_images / epoch_time
 
-        # Mask R-CNN's loss dict is only available in train() mode
-        model.train()
-        val_loss = 0
-        with torch.no_grad():
-            for images, targets in val_loader:
-                images = [img.to(device) for img in images]
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                with torch.cuda.amp.autocast(enabled=use_amp):
-                    loss_dict = model(images, targets)
-                    val_loss += sum(loss_dict.values()).item()
-        avg_val_loss = val_loss / len(val_loader)
-        
-        # Predictions for unified evaluator
-        model.eval()
-        predictions_by_image = {}
-        with torch.no_grad():
-            for images, targets in val_loader:
-                images = [img.to(device) for img in images]
-                outputs = model(images)
-                for t, o in zip(targets, outputs):
-                    img_id = t["image_id"].item()
-                    preds = []
-                    boxes = o["boxes"].cpu().numpy()
-                    labels = o["labels"].cpu().numpy()
-                    scores = o["scores"].cpu().numpy()
-                    masks = o["masks"].cpu().numpy()
-                    for box, label, score, mask in zip(boxes, labels, scores, masks):
-                        preds.append({
-                            "category_id": int(label) - 1, # undo +1 background
-                            "score": float(score),
-                            "bbox": [float(box[0]), float(box[1]), float(box[2]-box[0]), float(box[3]-box[1])],
-                            "segmentation": (mask[0] > 0.5)
-                        })
-                    predictions_by_image[img_id] = preds
-                    
-        val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+        # ── Validation: only run every val_interval epochs (or on the last epoch) ──
+        run_val = (epoch % args.val_interval == 0) or (epoch == args.epochs)
+
+        avg_val_loss = 0.0
+        val_metrics = None
+
+        if run_val:
+            print(f"\n[Epoch {epoch}] Running validation (every {args.val_interval} epochs)...")
+
+            # Mask R-CNN's loss dict is only available in train() mode
+            model.train()
+            val_loss = 0
+            with torch.no_grad():
+                for images, targets in val_loader:
+                    images = [img.to(device) for img in images]
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        loss_dict = model(images, targets)
+                        val_loss += sum(loss_dict.values()).item()
+            avg_val_loss = val_loss / len(val_loader)
+
+            # Predictions for unified evaluator
+            model.eval()
+            predictions_by_image = {}
+            with torch.no_grad():
+                for images, targets in val_loader:
+                    images = [img.to(device) for img in images]
+                    outputs = model(images)
+                    for t, o in zip(targets, outputs):
+                        img_id = t["image_id"].item()
+                        preds = []
+                        boxes = o["boxes"].cpu().numpy()
+                        labels = o["labels"].cpu().numpy()
+                        scores = o["scores"].cpu().numpy()
+                        masks = o["masks"].cpu().numpy()
+                        for box, label, score, mask in zip(boxes, labels, scores, masks):
+                            preds.append({
+                                "category_id": int(label) - 1,  # undo +1 background
+                                "score": float(score),
+                                "bbox": [float(box[0]), float(box[1]), float(box[2]-box[0]), float(box[3]-box[1])],
+                                "segmentation": (mask[0] > 0.5)
+                            })
+                        predictions_by_image[img_id] = preds
+
+            val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+        else:
+            print(f"\n[Epoch {epoch}] Skipping validation (next at epoch {epoch + (args.val_interval - epoch % args.val_interval)})")
         
         train_stats = {
             "train_loss": avg_train_loss,
