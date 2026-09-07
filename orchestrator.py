@@ -59,10 +59,11 @@ def display_main_menu():
     print("======================================================================")
 
 class ModelSelection:
-    def __init__(self, yolo=False, yolo11x=False, maskrcnn=False, mask2former=False, sam2=False, maskdino=False, segformer=False):
+    def __init__(self, yolo=False, yolo11x=False, maskrcnn=False, fastrcnn=False, mask2former=False, sam2=False, maskdino=False, segformer=False):
         self.yolo = yolo
         self.yolo11x = yolo11x
         self.maskrcnn = maskrcnn
+        self.fastrcnn = fastrcnn
         self.mask2former = mask2former
         self.sam2 = sam2
         self.maskdino = maskdino
@@ -444,6 +445,7 @@ def save_run_config(logs_dir, task_name, dataset, models=None, hparams=None, ext
         if getattr(models, "yolo",        False): selected_models.append("yolo11m-seg")
         if getattr(models, "yolo11x",     False): selected_models.append("yolo11x-seg")
         if getattr(models, "maskrcnn",    False): selected_models.append("maskrcnn")
+        if getattr(models, "fastrcnn",    False): selected_models.append("fastrcnn")
         if getattr(models, "mask2former", False): selected_models.append("mask2former")
         if getattr(models, "sam2",        False): selected_models.append("sam2")
         if getattr(models, "maskdino",    False): selected_models.append("maskdino")
