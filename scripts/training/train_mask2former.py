@@ -215,6 +215,7 @@ def main():
     for epoch in range(1, args.epochs + 1):
         model.train()
         start_time = time.time()
+        running_loss = 0.0
         for batch_idx, batch in enumerate(train_loader):
             if args.max_batches and batch_idx >= args.max_batches:
                 break
