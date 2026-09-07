@@ -132,6 +132,9 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--output_dir", default="runs_comparison/mask2former")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
+    parser.add_argument("--val_interval", type=int, default=5,
+                        help="Run validation + COCO eval every N epochs (default: 5). "
+                             "Use 1 to validate every epoch.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -196,27 +199,22 @@ def main():
     else:
         print("[INFO] Rust DataLoader not found -- using Python DataLoader.")
         train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                                  collate_fn=collate_fn, num_workers=args.num_workers,
-                                  pin_memory=True, persistent_workers=args.num_workers > 0)
+                                  collate_fn=collate_fn, num_workers=args.num_workers)
         val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                                  collate_fn=collate_fn, num_workers=args.num_workers,
-                                  pin_memory=True, persistent_workers=args.num_workers > 0)
+                                  collate_fn=collate_fn, num_workers=args.num_workers)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    use_amp = device == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     run_name = f"mask2former_{ds_path.name if ds_path.is_dir() else args.dataset}"
     logger = UnifiedLogger(os.path.join(args.output_dir, run_name), "mask2former")
     logger.print_dataset_health(str(train_json), str(val_json))
     evaluator = UnifiedEvaluator(str(val_json), str(val_images), class_names, os.path.join(args.output_dir, run_name))
 
-    print(f"[*] Starting Mask2Former Training for {args.epochs} epochs (AMP: {use_amp})...")
+    print(f"[*] Starting Mask2Former Training for {args.epochs} epochs...")
 
     for epoch in range(1, args.epochs + 1):
         model.train()
         start_time = time.time()
-        running_loss = 0.0
         for batch_idx, batch in enumerate(train_loader):
             if args.max_batches and batch_idx >= args.max_batches:
                 break
@@ -224,27 +222,27 @@ def main():
             mask_labels = [m.to(device) for m in batch["mask_labels"]]
             class_labels = [c.to(device) for c in batch["class_labels"]]
 
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                outputs = model(
-                    pixel_values=pixel_values,
-                    mask_labels=mask_labels,
-                    class_labels=class_labels
-                )
-                loss = outputs.loss
+            outputs = model(
+                pixel_values=pixel_values,
+                mask_labels=mask_labels,
+                class_labels=class_labels
+            )
+            loss = outputs.loss
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
             running_loss += loss.item()
 
         epoch_time = time.time() - start_time
         avg_train_loss = running_loss / max(len(train_loader), 1)
 
-        # Evaluation (skip during quick max_batches capacity test)
+        # Evaluation
         val_metrics = None
-        if not args.max_batches and ((epoch % 5 == 0) or (epoch == args.epochs)):
+        run_val = (epoch % args.val_interval == 0) or (epoch == args.epochs)
+        if run_val:
+            print(f"\n[Epoch {epoch}] Running validation (every {args.val_interval} epochs)...")
             model.eval()
             predictions_by_image = {}
             with torch.no_grad():
@@ -277,6 +275,8 @@ def main():
                         predictions_by_image[img_id] = preds
 
             val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+        else:
+            print(f"\n[Epoch {epoch}] Skipping validation (next at epoch {epoch + (args.val_interval - epoch % args.val_interval)})")
 
         train_stats = {
             "train_loss": avg_train_loss,

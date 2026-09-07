@@ -129,6 +129,9 @@ def main():
     parser.add_argument("--dataset", default="combined_carparts", help="Dataset name or path to dataset directory.")
     parser.add_argument("--project", default="runs_comparison")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
+    parser.add_argument("--val_interval", type=int, default=5,
+                        help="Run unified COCO eval every N epochs (default: 5). "
+                             "Use 1 to evaluate every epoch. Note: YOLO's own val still runs every epoch.")
     args, _ = parser.parse_known_args()
 
     cache_arg = False if args.cache == "none" else args.cache
@@ -190,7 +193,7 @@ def main():
 
     def custom_eval_callback(trainer):
         epoch = trainer.epoch + 1
-        run_unified = (epoch % 5 == 0) or (epoch == trainer.epochs)
+        run_unified = (epoch % args.val_interval == 0) or (epoch == trainer.epochs)
         
         # Native YOLO stats
         tloss_raw = getattr(trainer, 'tloss', 0)
@@ -279,29 +282,30 @@ def main():
         "amp": True,    # re-enabled: numpy<2 pinned in requirements.txt fixes the cu118 compat crash
     }
     if args.max_batches:
-        train_kwargs["time"] = 0.003 # ~10s max for fast micro-benchmark
-        train_kwargs["val"] = False  # Skip per-epoch validation during capacity check
+        train_kwargs["time"] = 0.005 # ~18s max for quick micro-benchmark
 
     model.train(**train_kwargs)
     logger.print_final_summary()
 
     best_weights_path = os.path.join(project, run_name, "weights", "best.pt")
 
-    # Run final validation only during full training, skip during quick capacity testing
-    if not args.max_batches:
-        test_img_dir = ds_path / "images" / "test"
-        eval_split = "test" if test_img_dir.exists() and any(test_img_dir.iterdir()) else "val"
+    # Run final validation on the test split explicitly for a clean comparison metric.
+    # Pass the SAME project/name explicitly so this doesn't fall back to Ultralytics'
+    # own default "runs/segment/val" location. plots=True here since this only
+    # runs once, not once-per-epoch.
+    test_img_dir = ds_path / "images" / "test"
+    eval_split = "test" if test_img_dir.exists() and any(test_img_dir.iterdir()) else "val"
 
-        metrics = model.val(
-            data=data_yaml,
-            split=eval_split,
-            project=project,
-            name=f"{run_name}_{eval_split}_eval",
-            exist_ok=True,
-            plots=True,
-        )
-        print("\n[RESULTS] Test-set metrics:")
-        print(metrics.results_dict)
+    metrics = model.val(
+        data=data_yaml,
+        split=eval_split,
+        project=project,
+        name=f"{run_name}_{eval_split}_eval",
+        exist_ok=True,
+        plots=True,
+    )
+    print("\n[RESULTS] Test-set metrics:")
+    print(metrics.results_dict)
 
     print(f"\n[OK] Trained weights saved at: {best_weights_path}")
     # Also write the path to a small text file so downstream scripts (or you)

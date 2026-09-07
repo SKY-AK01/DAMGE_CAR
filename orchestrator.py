@@ -140,13 +140,15 @@ class Hyperparams:
             yolo_default_b = get_default_batch("yolo11m-seg", 8)
             yolo_default_w = get_default_workers("yolo11m-seg", 8)
             print("\n---- YOLOv11m-seg ----")
-            self.yolo_epochs  = prompt_int("Epochs", 50)
-            self.yolo_batch   = prompt_int("Batch size (-1 = auto)", yolo_default_b)
-            self.yolo_workers = prompt_int("Dataloader workers", yolo_default_w)
+            self.yolo_epochs      = prompt_int("Epochs", 50)
+            self.yolo_batch       = prompt_int("Batch size (-1 = auto)", yolo_default_b)
+            self.yolo_workers     = prompt_int("Dataloader workers", yolo_default_w)
+            self.yolo_val_interval = prompt_int("Validate every N epochs", 5)
         else:
-            self.yolo_epochs  = 50
-            self.yolo_batch   = get_default_batch("yolo11m-seg", 8)
-            self.yolo_workers = get_default_workers("yolo11m-seg", 8)
+            self.yolo_epochs      = 50
+            self.yolo_batch       = get_default_batch("yolo11m-seg", 8)
+            self.yolo_workers     = get_default_workers("yolo11m-seg", 8)
+            self.yolo_val_interval = 5
 
         # ── Mask R-CNN ────────────────────────────────────────────────────────
         if need_maskrcnn:
@@ -166,9 +168,10 @@ class Hyperparams:
         # ── Fast R-CNN — always silent default (not in model selection menu) ──
         fastrcnn_default_b = get_default_batch("fastrcnn", 2)
         fastrcnn_default_w = get_default_workers("fastrcnn", 4)
-        self.fastrcnn_epochs  = 20
-        self.fastrcnn_batch   = fastrcnn_default_b
-        self.fastrcnn_workers = fastrcnn_default_w
+        self.fastrcnn_epochs      = 20
+        self.fastrcnn_batch       = fastrcnn_default_b
+        self.fastrcnn_workers     = fastrcnn_default_w
+        self.fastrcnn_val_interval = 5
 
         # ── Mask2Former / SAM2 / MaskDINO / SegFormer ────────────────────────
         if need_m2f:
@@ -186,22 +189,24 @@ class Hyperparams:
             else:
                 label = "Mask2Former / SAM2 / MaskDINO / SegFormer"
             print(f"\n---- {label} ----")
-            self.m2f_epochs  = prompt_int("Epochs", 20)
-            self.m2f_batch   = prompt_int("Batch size", m2f_default_b)
-            self.m2f_workers = prompt_int("Dataloader workers", m2f_default_w)
+            self.m2f_epochs       = prompt_int("Epochs", 20)
+            self.m2f_batch        = prompt_int("Batch size", m2f_default_b)
+            self.m2f_workers      = prompt_int("Dataloader workers", m2f_default_w)
+            self.m2f_val_interval = prompt_int("Validate every N epochs", 5)
         else:
-            self.m2f_epochs  = 20
-            self.m2f_batch   = get_default_batch("mask2former", 2)
-            self.m2f_workers = get_default_workers("mask2former", 4)
+            self.m2f_epochs       = 20
+            self.m2f_batch        = get_default_batch("mask2former", 2)
+            self.m2f_workers      = get_default_workers("mask2former", 4)
+            self.m2f_val_interval = 5
 
         # ── Summary: only show selected models ────────────────────────────────
         print("\n---- Summary ----")
         if need_yolo:
-            print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}")
+            print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}  val_every={self.yolo_val_interval}")
         if need_maskrcnn:
             print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}  val_every={self.mrcnn_val_interval}")
         if need_m2f:
-            print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}")
+            print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}  val_every={self.m2f_val_interval}")
         print("-----------------")
 
 def run_cmd_and_log(cmd, log_path, label):
@@ -519,6 +524,7 @@ def main():
             cmd = ["python", "scripts/training/train_yolo_seg.py", "--model", "yolo11m-seg",
                    "--dataset", dataset, "--epochs", str(hparams.yolo_epochs),
                    "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers),
+                   "--val_interval", str(hparams.yolo_val_interval),
                    "--project", out_dir]
             run_cmd_and_log(cmd, log_path, "train_yolo")
 
@@ -536,7 +542,8 @@ def main():
             out_dir = os.path.join(base_out_dir, "fastrcnn")
             cmd = ["python", "scripts/training/train_fastrcnn.py", "--dataset", dataset,
                    "--epochs", str(hparams.fastrcnn_epochs), "--batch", str(hparams.fastrcnn_batch),
-                   "--num_workers", str(hparams.fastrcnn_workers), "--project", out_dir]
+                   "--num_workers", str(hparams.fastrcnn_workers), "--project", out_dir,
+                   "--val_interval", str(hparams.fastrcnn_val_interval)]
             run_cmd_and_log(cmd, log_path, "train_fastrcnn")
 
     elif choice == "3":
@@ -563,8 +570,63 @@ def main():
             cmd = ["python", "scripts/training/train_yolo_seg.py", "--model", "yolo11m-seg",
                    "--dataset", dataset, "--epochs", str(hparams.yolo_epochs),
                    "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers),
+                   "--val_interval", str(hparams.yolo_val_interval),
                    "--project", out_dir]
             run_cmd_and_log(cmd, log_path, "train_yolo")
+
+        if models.maskrcnn:
+            log_path = os.path.join(logs_dir, "02_train_maskrcnn.log")
+            out_dir = os.path.join(base_out_dir, "maskrcnn")
+            cmd = ["python", "scripts/training/train_maskrcnn.py", "--dataset", dataset,
+                   "--epochs", str(hparams.mrcnn_epochs), "--batch", str(hparams.mrcnn_batch),
+                   "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.mrcnn_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_maskrcnn")
+
+        if models.fastrcnn:
+            log_path = os.path.join(logs_dir, "02_train_fastrcnn.log")
+            out_dir = os.path.join(base_out_dir, "fastrcnn")
+            cmd = ["python", "scripts/training/train_fastrcnn.py", "--dataset", dataset,
+                   "--epochs", str(hparams.fastrcnn_epochs), "--batch", str(hparams.fastrcnn_batch),
+                   "--num_workers", str(hparams.fastrcnn_workers), "--project", out_dir,
+                   "--val_interval", str(hparams.fastrcnn_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_fastrcnn")
+
+        if models.mask2former:
+            log_path = os.path.join(logs_dir, "02_train_mask2former.log")
+            out_dir = os.path.join(base_out_dir, "mask2former")
+            cmd = ["python", "scripts/training/train_mask2former.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_mask2former")
+
+        if models.sam2:
+            log_path = os.path.join(logs_dir, "02_train_sam2.log")
+            out_dir = os.path.join(base_out_dir, "sam2")
+            cmd = ["python", "scripts/training/train_sam2_seg.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_sam2")
+
+        if models.maskdino:
+            log_path = os.path.join(logs_dir, "02_train_maskdino.log")
+            out_dir = os.path.join(base_out_dir, "maskdino")
+            cmd = ["python", "scripts/training/train_maskdino.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_maskdino")
+
+        if models.segformer:
+            log_path = os.path.join(logs_dir, "02_train_segformer.log")
+            out_dir = os.path.join(base_out_dir, "segformer")
+            cmd = ["python", "scripts/training/train_segformer.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_segformer")
 
     elif choice == "5":
         print("\n[TASK] Automated Azure ML Training")

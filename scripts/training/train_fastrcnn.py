@@ -57,13 +57,6 @@ sys.path.append(str(PROJECT_ROOT))
 from scripts.evaluation.unified_logger import UnifiedLogger
 from scripts.evaluation.unified_evaluator import UnifiedEvaluator
 
-# -- Rust DataLoader (optional speedup) ----------------------------------------
-try:
-    from scripts.training.rust_dataloader_bridge import build_rust_loader, RUST_AVAILABLE
-except ImportError:
-    RUST_AVAILABLE = False
-    build_rust_loader = None
-
 
 class CocoDetectionDataset(Dataset):
     """COCO-format detection dataset (no mask head -- bounding boxes only).
@@ -164,6 +157,9 @@ def main():
                         help="Use automatic mixed precision (on by default).")
     parser.add_argument("--no-amp", dest="amp", action="store_false")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
+    parser.add_argument("--val_interval", type=int, default=5,
+                        help="Run validation + COCO eval every N epochs (default: 5). "
+                             "Use 1 to validate every epoch.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -217,47 +213,16 @@ def main():
     train_ds = CocoDetectionDataset(train_images, train_json)
     val_ds   = CocoDetectionDataset(val_images,   val_json)
 
-    if RUST_AVAILABLE:
-        print("[OK] Using Rust-parallel DataLoader (PyO3 + Rayon) for image decode")
-        train_loader = build_rust_loader(
-            json_path=str(train_json),
-            images_dir=str(train_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=True,
-            num_workers=0,
-            augment=True,
-            format="maskrcnn",
-        ) or DataLoader(
-            train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-        val_loader = build_rust_loader(
-            json_path=str(val_json),
-            images_dir=str(val_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=False,
-            num_workers=0,
-            augment=False,
-            format="maskrcnn",
-        ) or DataLoader(
-            val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-        val_loader = DataLoader(
-            val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
+        num_workers=args.num_workers, pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
+        num_workers=args.num_workers, pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
 
     params    = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
@@ -308,42 +273,53 @@ def main():
         epoch_time     = time.time() - epoch_start
         images_sec     = num_images / epoch_time
 
-        # Validation loss (train mode -- Faster R-CNN only returns loss_dict in train)
-        model.train()
-        val_loss = 0.0
-        with torch.no_grad():
-            for images, targets in val_loader:
-                images  = [img.to(device) for img in images]
-                targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                with torch.cuda.amp.autocast(enabled=use_amp):
-                    loss_dict = model(images, targets)
-                    val_loss += sum(loss_dict.values()).item()
-        avg_val_loss = val_loss / len(val_loader)
+        # ── Validation: only run every val_interval epochs (or on the last epoch) ──
+        run_val = (epoch % args.val_interval == 0) or (epoch == args.epochs)
 
-        # Predictions for unified evaluator (eval mode)
-        model.eval()
-        predictions_by_image = {}
-        with torch.no_grad():
-            for images, targets in val_loader:
-                images  = [img.to(device) for img in images]
-                outputs = model(images)
-                for t, o in zip(targets, outputs):
-                    img_id = t["image_id"].item()
-                    preds  = []
-                    boxes  = o["boxes"].cpu().numpy()
-                    labels = o["labels"].cpu().numpy()
-                    scores = o["scores"].cpu().numpy()
-                    for box, label, score in zip(boxes, labels, scores):
-                        preds.append({
-                            "category_id": int(label) - 1,  # undo +1 background shift
-                            "score":       float(score),
-                            "bbox":        [float(box[0]), float(box[1]),
-                                            float(box[2] - box[0]), float(box[3] - box[1])],
-                            "segmentation": None,  # detection-only model
-                        })
-                    predictions_by_image[img_id] = preds
+        avg_val_loss = 0.0
+        val_metrics  = None
 
-        val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+        if run_val:
+            print(f"\n[Epoch {epoch}] Running validation (every {args.val_interval} epochs)...")
+
+            # Validation loss (train mode — Faster R-CNN only returns loss_dict in train)
+            model.train()
+            val_loss = 0.0
+            with torch.no_grad():
+                for images, targets in val_loader:
+                    images  = [img.to(device) for img in images]
+                    targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        loss_dict = model(images, targets)
+                        val_loss += sum(loss_dict.values()).item()
+            avg_val_loss = val_loss / len(val_loader)
+
+            # Predictions for unified evaluator (eval mode)
+            model.eval()
+            predictions_by_image = {}
+            with torch.no_grad():
+                for images, targets in val_loader:
+                    images  = [img.to(device) for img in images]
+                    outputs = model(images)
+                    for t, o in zip(targets, outputs):
+                        img_id = t["image_id"].item()
+                        preds  = []
+                        boxes  = o["boxes"].cpu().numpy()
+                        labels = o["labels"].cpu().numpy()
+                        scores = o["scores"].cpu().numpy()
+                        for box, label, score in zip(boxes, labels, scores):
+                            preds.append({
+                                "category_id": int(label) - 1,  # undo +1 background shift
+                                "score":       float(score),
+                                "bbox":        [float(box[0]), float(box[1]),
+                                                float(box[2] - box[0]), float(box[3] - box[1])],
+                                "segmentation": None,  # detection-only model
+                            })
+                        predictions_by_image[img_id] = preds
+
+            val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+        else:
+            print(f"\n[Epoch {epoch}] Skipping validation (next at epoch {epoch + (args.val_interval - epoch % args.val_interval)})")
 
         train_stats = {
             "train_loss":    avg_train_loss,

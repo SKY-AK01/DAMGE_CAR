@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--output_dir", default="runs_comparison/maskdino")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
+    parser.add_argument("--val_interval", type=int, default=5,
+                        help="Run validation + COCO eval every N epochs (default: 5).")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
