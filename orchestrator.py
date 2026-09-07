@@ -519,7 +519,7 @@ def main():
         dataset = run_dataset_prep(logs_dir)
         save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
         print(f"\n[INFO] Using dataset: {dataset}")
-        
+
         if models.yolo:
             log_path = os.path.join(logs_dir, "02_train_yolo.log")
             out_dir = os.path.join(base_out_dir, "yolo11m-seg")
@@ -529,6 +529,16 @@ def main():
                    "--val_interval", str(hparams.yolo_val_interval),
                    "--project", out_dir]
             run_cmd_and_log(cmd, log_path, "train_yolo")
+
+        if models.yolo11x:
+            log_path = os.path.join(logs_dir, "02_train_yolo11x.log")
+            out_dir = os.path.join(base_out_dir, "yolo11x-seg")
+            cmd = ["python", "scripts/training/train_yolo_seg.py", "--model", "yolo11x-seg",
+                   "--dataset", dataset, "--epochs", str(hparams.yolo_epochs),
+                   "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers),
+                   "--val_interval", str(hparams.yolo_val_interval),
+                   "--project", out_dir]
+            run_cmd_and_log(cmd, log_path, "train_yolo11x")
 
         if models.maskrcnn:
             log_path = os.path.join(logs_dir, "02_train_maskrcnn.log")
@@ -547,6 +557,42 @@ def main():
                    "--num_workers", str(hparams.fastrcnn_workers), "--project", out_dir,
                    "--val_interval", str(hparams.fastrcnn_val_interval)]
             run_cmd_and_log(cmd, log_path, "train_fastrcnn")
+
+        if models.mask2former:
+            log_path = os.path.join(logs_dir, "02_train_mask2former.log")
+            out_dir = os.path.join(base_out_dir, "mask2former")
+            cmd = ["python", "scripts/training/train_mask2former.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_mask2former")
+
+        if models.sam2:
+            log_path = os.path.join(logs_dir, "02_train_sam2.log")
+            out_dir = os.path.join(base_out_dir, "sam2")
+            cmd = ["python", "scripts/training/train_sam2_seg.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_sam2")
+
+        if models.maskdino:
+            log_path = os.path.join(logs_dir, "02_train_maskdino.log")
+            out_dir = os.path.join(base_out_dir, "maskdino")
+            cmd = ["python", "scripts/training/train_maskdino.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_maskdino")
+
+        if models.segformer:
+            log_path = os.path.join(logs_dir, "02_train_segformer.log")
+            out_dir = os.path.join(base_out_dir, "segformer")
+            cmd = ["python", "scripts/training/train_segformer.py", "--dataset", dataset,
+                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
+                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
+                   "--val_interval", str(hparams.m2f_val_interval)]
+            run_cmd_and_log(cmd, log_path, "train_segformer")
 
     elif choice == "3":
         print("\n[TASK] Inference on Test Images")
