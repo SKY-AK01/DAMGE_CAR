@@ -90,8 +90,13 @@ class COCOMask2FormerDataset(Dataset):
         # This matches the API expected by Mask2FormerImageProcessor in
         # transformers >= 4.40 which no longer accepts a list of binary masks
         # or 'class_labels' as direct processor kwargs.
+        #
+        # IMPORTANT: the processor iterates ALL unique pixel values in the map,
+        # including 0 (background), so 0 must be present in the dict.
+        # Use plain Python int keys — np.uint8 keys cause KeyError in the
+        # processor's internal lookup even when the value is present.
         instance_map = np.zeros((h, w), dtype=np.int32)
-        instance_id_to_semantic_id = {}
+        instance_id_to_semantic_id = {0: 0}   # 0 = background → class 0
         for inst_idx, (mask, cat_id) in enumerate(zip(instance_masks, class_labels), start=1):
             instance_map[mask.astype(bool)] = inst_idx
             instance_id_to_semantic_id[inst_idx] = int(cat_id)
