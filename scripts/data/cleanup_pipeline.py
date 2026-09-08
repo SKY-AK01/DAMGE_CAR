@@ -4,20 +4,24 @@ cleanup_pipeline.py
 --------------------
 Removes stale pipeline outputs before a fresh run.
 
-NEVER touches:
-  - datasets/raw/          <- hand-annotated ground truth, inviolable
+TWO-QUESTION interactive flow (matches orchestrator.py's interactive_cleanup_prompt):
+  Q1 [y/N]   -- Delete run outputs, logs, and derived dataset artifacts?
+                 (runs_comparison/, logs/, combined_carparts/, matched/, external/)
+  Q2 [yes]   -- Delete datasets/raw/? Requires typing the exact word 'yes' to confirm.
+                 Default: No. This is your hand-annotated ground truth — IRREPLACEABLE.
 
-Removes (after confirmation):
-  - datasets/combined_carparts/   <- rebuilt every run anyway
-  - datasets/matched/             <- rebuilt by matcher scripts
-  - datasets/external/            <- re-downloaded/re-copied by pipeline
-  - runs_comparison/              <- training run outputs (logs, weights, metrics)
-  - logs/                         <- pipeline log files
+CLI flags (for automation / VM runs):
+  --yes          Skip Q1 interactively and proceed with run/derived cleanup.
+  --yes-raw      Skip Q2 interactively and also delete datasets/raw/ (DANGEROUS).
+  --keep-runs    Exclude runs_comparison/ from Q1 targets (only wipe dataset artifacts).
+  --dry-run      Show what would be deleted without actually deleting anything.
 
 Usage:
-  python scripts/data/cleanup_pipeline.py          # interactive confirmation
-  python scripts/data/cleanup_pipeline.py --yes    # non-interactive (CI/scripted use)
-  python scripts/data/cleanup_pipeline.py --keep-runs  # keep training outputs, only wipe datasets
+  python scripts/data/cleanup_pipeline.py            # full interactive two-question flow
+  python scripts/data/cleanup_pipeline.py --yes      # auto-confirm Q1, still ask Q2
+  python scripts/data/cleanup_pipeline.py --yes --yes-raw   # non-interactive full wipe
+  python scripts/data/cleanup_pipeline.py --keep-runs       # keep training outputs
+  python scripts/data/cleanup_pipeline.py --dry-run         # preview only
 """
 
 import argparse
@@ -28,22 +32,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATASETS     = PROJECT_ROOT / "datasets"
 
-# ── What will be deleted ─────────────────────────────────────────────────────
-TARGETS = [
-    (DATASETS / "combined_carparts", "Rebuilt every run — stale data risk"),
-    (DATASETS / "matched",           "Rebuilt by matcher scripts from external/"),
-    (DATASETS / "external",          "Re-downloaded/re-copied from original sources"),
+# ── Q1 targets (run outputs + derived dataset artifacts) ─────────────────────
+Q1_TARGETS = [
+    (DATASETS / "combined_carparts",   "Rebuilt every run — stale data risk"),
+    (DATASETS / "matched",             "Rebuilt by matcher scripts from external/"),
+    (DATASETS / "external",            "Re-downloaded/re-copied from original sources"),
     (PROJECT_ROOT / "runs_comparison", "Training run outputs (logs, weights, metrics CSVs)"),
-    (PROJECT_ROOT / "logs",          "Pipeline log files and pipeline reports"),
+    (PROJECT_ROOT / "logs",            "Pipeline log files and pipeline reports"),
 ]
 
-# ── What is NEVER touched ────────────────────────────────────────────────────
-PROTECTED = [
-    DATASETS / "raw",
-    DATASETS / "carparts-seg",        # legacy location — safe to keep
-    DATASETS / "custom_carparts",     # legacy location — safe to keep
-    DATASETS / "dsmlr-carparts",      # raw DSMLR git clone
-    DATASETS / "dsmlr-carparts-split",# legacy split — safe to keep
+# ── Always-protected paths (never asked about, never deleted) ─────────────────
+ALWAYS_PROTECTED = [
+    DATASETS / "carparts-seg",         # legacy location — safe to keep
+    DATASETS / "custom_carparts",      # legacy location — safe to keep
+    DATASETS / "dsmlr-carparts",       # raw DSMLR git clone
+    DATASETS / "dsmlr-carparts-split", # legacy split — safe to keep
     PROJECT_ROOT / "RAW_DATASET",
 ]
 
@@ -65,15 +68,16 @@ def sizeof_dir(path: Path) -> str:
         return "(unknown size)"
 
 
-def run_cleanup(targets, dry_run=False):
+def _delete_targets(targets, dry_run=False):
+    """Delete a list of (path, reason) pairs. Returns (deleted, skipped) lists."""
     deleted = []
     skipped = []
-    for path, reason in targets:
+    for path, _ in targets:
         if not path.exists():
             skipped.append(str(path))
             continue
-        # Safety: never delete protected paths
-        for protected in PROTECTED:
+        # Safety belt: refuse if path is inside an always-protected directory
+        for protected in ALWAYS_PROTECTED:
             try:
                 path.resolve().relative_to(protected.resolve())
                 print(f"[SAFETY] Refusing to delete protected path: {path}")
@@ -89,75 +93,124 @@ def run_cleanup(targets, dry_run=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Clean up stale pipeline outputs (never touches datasets/raw/).")
+    parser = argparse.ArgumentParser(
+        description="Clean up stale pipeline outputs — two-question interactive flow."
+    )
     parser.add_argument("--yes", "-y", action="store_true",
-                        help="Skip interactive confirmation and proceed immediately.")
+                        help="Auto-confirm Q1 (run outputs/derived data). Still asks Q2 for raw/.")
+    parser.add_argument("--yes-raw", action="store_true",
+                        help="Auto-confirm Q2 deletion of datasets/raw/ (DANGEROUS — irreplaceable data).")
     parser.add_argument("--keep-runs", action="store_true",
-                        help="Keep runs_comparison/ training outputs; only wipe dataset artifacts.")
+                        help="Exclude runs_comparison/ from Q1; only wipe dataset artifacts.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be deleted without actually deleting anything.")
     args = parser.parse_args()
 
-    targets = TARGETS.copy()
+    q1_targets = Q1_TARGETS.copy()
     if args.keep_runs:
-        targets = [(p, r) for p, r in targets if "runs_comparison" not in str(p)]
+        q1_targets = [(p, r) for p, r in q1_targets if "runs_comparison" not in str(p)]
 
-    # ── Print what will be deleted ────────────────────────────────────────────
+    # ── Header ────────────────────────────────────────────────────────────────
     print()
-    print("=" * 65)
-    print("Pipeline Cleanup — The following will be DELETED:")
-    print("=" * 65)
-    any_present = False
-    for path, reason in targets:
-        exists = path.exists()
-        size   = sizeof_dir(path) if exists else "(not present)"
-        flag   = "  DELETE" if exists else "  skip  "
-        print(f"{flag}  {path.relative_to(PROJECT_ROOT)}  [{size}]")
-        print(f"         Reason: {reason}")
-        if exists:
-            any_present = True
+    print("=" * 68)
+    print(" Pipeline Cleanup")
+    print("=" * 68)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Q1 — Run outputs, logs, derived dataset artifacts
+    # ══════════════════════════════════════════════════════════════════════════
+    present_q1 = [(p, r) for p, r in q1_targets if p.exists()]
 
     print()
-    print("=" * 65)
-    print("The following are PROTECTED and will NEVER be touched:")
-    print("=" * 65)
-    for p in PROTECTED:
-        exists = "exists" if p.exists() else "not present"
+    print("  [Q1] Delete old run outputs, logs, and derived dataset artifacts?")
+    print("       (runs_comparison/, logs/, combined_carparts/, matched/, external/)")
+    print("       These are rebuilt fresh every run. Default: No")
+    print()
+    if present_q1:
+        print("       Will remove:")
+        for path, _ in present_q1:
+            size = sizeof_dir(path)
+            try:
+                rel = path.relative_to(PROJECT_ROOT)
+            except ValueError:
+                rel = path
+            print(f"         DELETE  {rel}  [{size}]")
+    else:
+        print("       (nothing to remove — all targets already absent)")
+    print()
+
+    do_q1 = False
+    if args.yes:
+        print("       [AUTO] --yes flag set — proceeding with deletion.")
+        do_q1 = True
+    elif args.dry_run:
+        print("       [DRY RUN] Would delete the above (if present).")
+        do_q1 = True   # allow dry-run path to show what would happen
+    elif present_q1:
         try:
-            rel = p.relative_to(PROJECT_ROOT)
-        except ValueError:
-            rel = p
-        print(f"  SAFE  {rel}  ({exists})")
+            ans = input("       Delete run outputs? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        do_q1 = ans in ("y", "yes")
+        if not do_q1:
+            print("       [SKIP] Keeping existing run outputs.")
 
-    if not any_present:
-        print()
-        print("[OK] Nothing to clean up — all target directories are already absent.")
-        return
+    if do_q1 and not args.dry_run:
+        for path, _ in present_q1:
+            print(f"  [DELETE] {path}")
+            shutil.rmtree(path, ignore_errors=True)
+        if present_q1:
+            print("  [OK] Run outputs cleaned.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Q2 — datasets/raw/  (requires exact word 'yes')
+    # ══════════════════════════════════════════════════════════════════════════
+    raw_dir  = DATASETS / "raw"
+    raw_size = sizeof_dir(raw_dir)
+
+    print()
+    print("  [Q2] Delete datasets/raw/? (your hand-annotated ground truth — IRREPLACEABLE!)")
+    print(f"       Current size: {raw_size}")
+    print("       Default: No. You must type 'yes' (not just 'y') to confirm.")
+    print()
+
+    do_q2 = False
+    if args.yes_raw:
+        print("       [AUTO] --yes-raw flag set — proceeding with deletion.")
+        do_q2 = True
+    elif args.dry_run:
+        print(f"       [DRY RUN] Would remove: datasets/raw/  [{raw_size}]")
+    elif raw_dir.exists() and any(raw_dir.rglob("*.*")):
+        print(f"       Will remove: datasets/raw/  [{raw_size}]")
+        try:
+            ans = input("       Type 'yes' to DELETE datasets/raw/ (or anything else to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans == "yes":
+            do_q2 = True
+        else:
+            print("       [SKIP] Keeping datasets/raw/ (smart choice).")
+    else:
+        print("       datasets/raw/ is empty or absent — nothing to delete.")
+
+    if do_q2 and not args.dry_run:
+        print(f"  [DELETE] {raw_dir}")
+        shutil.rmtree(raw_dir, ignore_errors=True)
+        print("  [OK] datasets/raw/ removed.")
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    print()
+    print("=" * 68)
 
     if args.dry_run:
-        print()
-        print("[DRY RUN] No files were deleted.")
+        print("[DRY RUN] No files were actually deleted.")
         return
 
-    # ── Confirm ───────────────────────────────────────────────────────────────
-    if not args.yes:
-        print()
-        answer = input("Proceed with deletion? [y/N]: ").strip().lower()
-        if answer not in ("y", "yes"):
-            print("[CANCELLED] Nothing deleted.")
-            return
-
-    # ── Execute ───────────────────────────────────────────────────────────────
-    print()
-    deleted, skipped = run_cleanup(targets)
-    for p in deleted:
-        print(f"[DELETED] {p}")
-    for p in skipped:
-        print(f"[SKIP]    {p} (not present)")
-
-    print()
-    print(f"[OK] Cleanup complete. {len(deleted)} directories removed.")
-    print("     datasets/raw/ and all protected paths were not touched.")
+    total_deleted = (len(present_q1) if do_q1 else 0) + (1 if do_q2 and raw_dir.exists() else 0)
+    if total_deleted == 0 and not do_q1 and not do_q2:
+        print("[OK] Nothing deleted.")
+    else:
+        print(f"[OK] Cleanup complete.")
 
 
 if __name__ == "__main__":
