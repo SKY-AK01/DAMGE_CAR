@@ -53,15 +53,15 @@ class COCOMask2FormerDataset(Dataset):
         img_id = self.image_ids[idx]
         img_info = self.images_by_id[img_id]
         img_path = self.images_dir / img_info["file_name"]
-        
+
         from PIL import Image
         image = Image.open(img_path).convert("RGB")
         w, h = image.size
-        
+
         anns = self.anns_by_image.get(img_id, [])
         instance_masks = []
         class_labels = []
-        
+
         from pycocotools import mask as mask_utils
         for ann in anns:
             seg = ann.get("segmentation")
@@ -70,12 +70,11 @@ class COCOMask2FormerDataset(Dataset):
             cat_id = ann["category_id"]
             if isinstance(seg, list):
                 rles = mask_utils.frPyObjects(seg, h, w)
-                rle = mask_utils.merge(rles)
+                rle  = mask_utils.merge(rles)
             elif isinstance(seg, dict):
                 rle = seg
             else:
                 continue
-            
             m = mask_utils.decode(rle)
             if m.sum() > 0:
                 instance_masks.append(m)
@@ -83,42 +82,53 @@ class COCOMask2FormerDataset(Dataset):
 
         if len(instance_masks) == 0:
             instance_masks = [np.zeros((h, w), dtype=np.uint8)]
-            class_labels = [0]
+            class_labels   = [0]
 
-        # Build a single H×W instance map where pixel value = instance index (1-based).
-        # Background = 0.  Also build instance_id_to_semantic_id mapping.
-        # This matches the API expected by Mask2FormerImageProcessor in
-        # transformers >= 4.40 which no longer accepts a list of binary masks
-        # or 'class_labels' as direct processor kwargs.
-        #
-        # IMPORTANT: the processor iterates ALL unique pixel values in the map,
-        # including 0 (background), so 0 must be present in the dict.
-        # Use plain Python int keys — np.uint8 keys cause KeyError in the
-        # processor's internal lookup even when the value is present.
-        instance_map = np.zeros((h, w), dtype=np.int32)
-        instance_id_to_semantic_id = {0: 0}   # 0 = background → class 0
-        for inst_idx, (mask, cat_id) in enumerate(zip(instance_masks, class_labels), start=1):
-            instance_map[mask.astype(bool)] = inst_idx
-            instance_id_to_semantic_id[inst_idx] = int(cat_id)
+        # ── Build pixel_values / pixel_mask via processor (image only) ───────
+        # We deliberately do NOT pass segmentation_maps to the processor because
+        # its internal instance_id_to_semantic_id lookup compares np.uint8 keys
+        # against our Python-int dict and raises KeyError on older transformers.
+        # Instead we construct mask_labels and class_labels tensors manually,
+        # which is exactly what the model's forward() / criterion expects.
+        img_inputs = self.processor(images=image, return_tensors="pt")
+        pixel_values = img_inputs["pixel_values"].squeeze(0)          # (3, H', W')
+        pixel_mask   = img_inputs.get("pixel_mask")
+        if pixel_mask is not None:
+            pixel_mask = pixel_mask.squeeze(0)                        # (H', W')
 
-        inputs = self.processor(
-            images=image,
-            segmentation_maps=instance_map,
-            instance_id_to_semantic_id=instance_id_to_semantic_id,
-            return_tensors="pt",
-        )
-        # Squeeze batch dimension added by processor
-        inputs = {k: v.squeeze(0) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-        inputs["image_id"] = img_id
-        return inputs
+        # Processor may resize; get the processed spatial size for mask resizing
+        _, proc_h, proc_w = pixel_values.shape
+
+        # ── Build mask_labels (N, H', W') float32 and class_labels (N,) int64 ─
+        from PIL import Image as PILImage
+        mask_tensors  = []
+        label_tensors = []
+        for m, cat_id in zip(instance_masks, class_labels):
+            # Resize binary mask to match processed image size using nearest interpolation
+            m_pil     = PILImage.fromarray(m.astype(np.uint8) * 255).resize(
+                            (proc_w, proc_h), PILImage.NEAREST)
+            m_resized = (np.array(m_pil) > 128).astype(np.float32)
+            mask_tensors.append(torch.from_numpy(m_resized))
+            label_tensors.append(torch.tensor(cat_id, dtype=torch.long))
+
+        result = {
+            "pixel_values": pixel_values,
+            "mask_labels":  torch.stack(mask_tensors),        # (N, H', W')
+            "class_labels": torch.stack(label_tensors),       # (N,)
+            "image_id":     img_id,
+        }
+        if pixel_mask is not None:
+            result["pixel_mask"] = pixel_mask
+        return result
 
 
 def collate_fn(batch):
     pixel_values = torch.stack([b["pixel_values"] for b in batch])
-    pixel_mask = torch.stack([b["pixel_mask"] for b in batch]) if "pixel_mask" in batch[0] else None
+    pixel_mask   = torch.stack([b["pixel_mask"] for b in batch]) if "pixel_mask" in batch[0] else None
 
-    # mask_labels and class_labels are lists-of-tensors (variable length per image)
-    # — keep them as plain Python lists, not stacked tensors.
+    # mask_labels: list of (N_i, H', W') tensors — N_i varies per image
+    # class_labels: list of (N_i,) tensors
+    # Keep as lists; the model's criterion handles variable N per image.
     mask_labels  = [b["mask_labels"]  for b in batch]
     class_labels = [b["class_labels"] for b in batch]
     image_ids    = [b["image_id"]     for b in batch]
