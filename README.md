@@ -1,9 +1,9 @@
 # Car Parts Segmentation — Model Comparison Pipeline
 
 Compares object detection/segmentation architectures on a car-parts dataset.
-Currently supports **YOLO11m-seg**, **Mask R-CNN**, and **Fast R-CNN**, with training submitted
-to Azure ML on an attached GPU VM. Dataset preparation and pipeline orchestration
-run locally via the Rust orchestrator binary (`orchestrator/`).
+Currently supports **YOLO11m-seg**, **Mask R-CNN**, **Fast R-CNN**, **Mask2Former**, and more,
+with training submitted to Azure ML on an attached GPU VM.
+Dataset preparation and pipeline orchestration run via `python orchestrator.py`.
 
 ---
 
@@ -29,11 +29,10 @@ won't stop you — it's your call if you know your VM's `/mnt` is persistent.
 ## Quick start
 
 ```bash
-cd ~/car_parts_pipeline
-chmod +x *.sh
-./setup_all.sh                      # one-time: venv, all deps, weight downloads
+cd ~/CAR_TRAIN1
+pip install -r requirements.txt
 source venv/bin/activate            # do this in EVERY new terminal/tmux session!
-./run_full_pipeline.sh              # dataset prep + train + evaluate + compare
+python orchestrator.py              # interactive menu — dataset prep, train, evaluate
 ```
 
 Default run trains and compares: **YOLOv11m-seg**, **Mask R-CNN**, and **Fast R-CNN**.
@@ -82,7 +81,7 @@ by default — documented here so you know why the scripts do what they do:
 |---|---|
 | `undefined symbol: ncclCommResume` | Root cause was never actually being inside the venv (`pip`/`python` resolved to a broken user-level install). Every script now checks `$VIRTUAL_ENV` and warns/fails loudly rather than silently using the wrong Python. |
 | `pip install -e .` failing with `No module named pip` (GroundingDINO/SAM2) | Their `setup.py` scripts try to run `pip install torch` inside pip's isolated build sandbox, which has no pip in it. Fixed with `--no-build-isolation` on every git-based editable install. |
-| YOLO `--output_dir` flag mismatch | Rust orchestrator was passing `--output_dir` but `train_yolo_seg.py` expects `--project`. Fixed in `orchestrator/src/main.rs`. |
+| YOLO `--output_dir` flag mismatch | Orchestrator was passing `--output_dir` but `train_yolo_seg.py` expects `--project`. Fixed. |
 | YOLO weights landing in a confusing nested path (`runs/segment/runs_comparison/...`) | Fixed by using an **absolute** `project` path and explicitly passing `project`/`name` to both `model.train()` and the follow-up `model.val()` call, so nothing falls back to Ultralytics' own default location. The final weights path is also printed and saved to `last_yolo_weights_path.txt` so you never have to guess it again. |
 | `weights_downloader.py` missing crashing the entire `setup_all.sh` via `set -e` | The call is now guarded with a file-existence check — a missing file just prints a warning and continues (it only affects Stage A annotation, not Stage B training). |
 | Copy/paste truncating long terminal commands | Everything is now in proper `.sh` files instead of one-line pasted commands. |
@@ -122,4 +121,3 @@ by default — documented here so you know why the scripts do what they do:
 **Documentation**
 - `PROJECT_LOG.md` — full narrative history: original goal, reasoning, every issue encountered and how it was diagnosed, and the final experimental results
 - `README.md` — this file
-# DAMGE_CAR

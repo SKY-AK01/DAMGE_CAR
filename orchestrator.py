@@ -4,11 +4,18 @@ orchestrator.py -- Interactive Pipeline Orchestrator in Python.
 
 Provides an interactive CLI menu to run data prep, model training (local/Azure ML),
 inference, evaluation, cleanup, and fast preprocessing without compilation dependencies.
+
+CLI flags (for automation / VM runs):
+  --yes-clean-runs   Skip the interactive prompt and DELETE runs/logs/combined/matched/external
+  --yes-clean-raw    Skip the interactive prompt and DELETE datasets/raw/  (DANGEROUS -- irreplaceable data!)
+                     Requires typing 'yes' interactively unless this flag is passed.
 """
 
 import sys
 import os
+import argparse
 import subprocess
+import shutil
 import datetime
 import glob
 import json
@@ -20,6 +27,14 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
+
+# ── CLI args (parsed once at module level so all functions can read them) ────
+_cli_parser = argparse.ArgumentParser(add_help=False)
+_cli_parser.add_argument("--yes-clean-runs", action="store_true", default=False,
+                          help="Non-interactively confirm deletion of runs/logs/combined/matched/external.")
+_cli_parser.add_argument("--yes-clean-raw", action="store_true", default=False,
+                          help="Non-interactively confirm deletion of datasets/raw/ (DANGEROUS).")
+_CLI_ARGS, _CLI_UNKNOWN = _cli_parser.parse_known_args()
 
 def prompt(msg):
     try:
@@ -47,15 +62,17 @@ def display_main_menu():
     print("  1) Annotate Images       -- Auto-annotate dataset (DINO + SAM2)")
     print("  2) Train Model Locally   -- Prepare dataset & train YOLO / Mask R-CNN / Fast R-CNN")
     print("  3) Test on Trained Model -- Run inference on test images")
-    print("  4) Run Full Local        -- Dataset Prep -> Train -> Evaluate")
+    print("  4) Run Full Local        -- Dataset Prep -> Train -> Evaluate -> Excel Report")
     print("  5) Train on Azure ML     -- Auto-upload dataset & submit GPU job to Azure ML")
     print("  6) Setup & Clean         -- Folder setup and log archive")
-    print("  7) Auto-Prepare Dataset  -- Check RAW/online, download if missing, convert & combine")
-    print("  8) Dataset Analytics     -- View image counts, total annotations, & per-label breakdown")
-    print("  9) Benchmark             -- Compare Rust vs Python preprocessing speed")
-    print("  10) Quick Pipeline Check -- Fast 3-epoch dry run on Azure ML (All Models)")
-    print("  11) GPU Capacity Check   -- Stepwise batch size & worker stress tuner")
-    print("  12) Exit")
+    print("  7) Auto-Prepare Dataset  -- Download missing sources, match, combine, generate COCO JSON")
+    print("  8) Preprocess Tools      -- Standalone tools (yolo_to_coco, combine, verify, blake3)")
+    print("  9) Dataset Analytics     -- View image counts, total annotations, & per-label breakdown")
+    print("  10) Benchmark            -- Compare preprocessing speed (yolo_to_coco + verify_labels)")
+    print("  11) Quick Pipeline Check -- Fast 3-epoch dry run on Azure ML (All Models)")
+    print("  12) GPU Capacity Check   -- Stepwise batch size & worker stress tuner")
+    print("  13) Cleanup Pipeline     -- Wipe stale outputs interactively (safe, never deletes raw/)")
+    print("  14) Exit")
     print("======================================================================")
 
 class ModelSelection:
@@ -276,75 +293,298 @@ def run_cmd_and_log(cmd, log_path, label):
         print(f"[FAILED] [{label}] failed with exit code {proc.returncode}. Log: {log_path}")
         return False
 
+def _sizeof_dir(path: Path) -> str:
+    """Return human-readable size string for a directory."""
+    if not path.exists():
+        return "(not present)"
+    try:
+        total = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        if total < 1024**2:
+            return f"{total/1024:.1f} KB"
+        elif total < 1024**3:
+            return f"{total/1024**2:.1f} MB"
+        else:
+            return f"{total/1024**3:.2f} GB"
+    except Exception:
+        return "(unknown)"
+
+
+def interactive_cleanup_prompt():
+    """
+    Ask TWO separate yes/no questions before any pipeline work:
+      Q1: Delete run outputs + logs + combined/matched/external  (default No)
+      Q2: Delete datasets/raw/                                    (default No, requires 'yes' to confirm)
+
+    CLI flags override interactive prompts:
+      --yes-clean-runs  → auto-confirms Q1
+      --yes-clean-raw   → auto-confirms Q2
+
+    Returns (clean_runs: bool, clean_raw: bool).
+    Nothing is deleted here — caller is responsible for deletion.
+    """
+    datasets_dir = PROJECT_ROOT / "datasets"
+
+    # ── Targets for Q1 ──────────────────────────────────────────────────────
+    runs_targets = [
+        PROJECT_ROOT / "runs_comparison",
+        PROJECT_ROOT / "logs",
+        datasets_dir / "combined_carparts",
+        datasets_dir / "matched",
+        datasets_dir / "external",
+    ]
+
+    print()
+    print("=" * 68)
+    print(" Pipeline Startup — Cleanup Check")
+    print("=" * 68)
+
+    # ── Q1: Run outputs ──────────────────────────────────────────────────────
+    present_runs = [p for p in runs_targets if p.exists()]
+    print()
+    print("  [Q1] Delete old run outputs, logs, and derived dataset artifacts?")
+    print("       (runs_comparison/, logs/, combined_carparts/, matched/, external/)")
+    print("       This will be rebuilt fresh. Default: No")
+    print()
+    if present_runs:
+        print("       Will remove:")
+        for p in present_runs:
+            size = _sizeof_dir(p)
+            try:
+                rel = p.relative_to(PROJECT_ROOT)
+            except ValueError:
+                rel = p
+            print(f"         DELETE  {rel}  [{size}]")
+    else:
+        print("       (nothing to remove — all targets already absent)")
+    print()
+
+    clean_runs = False
+    if _CLI_ARGS.yes_clean_runs:
+        print("       [AUTO] --yes-clean-runs flag set — proceeding with deletion.")
+        clean_runs = True
+    elif present_runs:
+        try:
+            ans = input("       Delete run outputs? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        clean_runs = ans in ("y", "yes")
+        if not clean_runs:
+            print("       [SKIP] Keeping existing run outputs.")
+
+    if clean_runs:
+        for p in present_runs:
+            print(f"  [DELETE] {p}")
+            shutil.rmtree(p, ignore_errors=True)
+        print("  [OK] Run outputs cleaned.")
+
+    # ── Q2: datasets/raw/ ────────────────────────────────────────────────────
+    raw_dir = datasets_dir / "raw"
+    raw_size = _sizeof_dir(raw_dir)
+    print()
+    print("  [Q2] Delete datasets/raw/? (your hand-annotated ground truth — IRREPLACEABLE!)")
+    print(f"       Current size: {raw_size}")
+    print("       Default: No. You must type 'yes' (not just 'y') to confirm.")
+    print()
+
+    clean_raw = False
+    if _CLI_ARGS.yes_clean_raw:
+        print("       [AUTO] --yes-clean-raw flag set — proceeding with deletion.")
+        clean_raw = True
+    elif raw_dir.exists() and any(raw_dir.rglob("*.*")):
+        print(f"       Will remove: datasets/raw/  [{raw_size}]")
+        try:
+            ans = input("       Type 'yes' to DELETE datasets/raw/ (or anything else to skip): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans == "yes":
+            clean_raw = True
+        else:
+            print("       [SKIP] Keeping datasets/raw/ (smart choice).")
+    else:
+        print("       datasets/raw/ is empty or absent — nothing to delete.")
+
+    if clean_raw:
+        print(f"  [DELETE] {raw_dir}")
+        shutil.rmtree(raw_dir, ignore_errors=True)
+        print("  [OK] datasets/raw/ removed.")
+
+    print()
+    print("=" * 68)
+    return clean_runs, clean_raw
+
+
 def ensure_and_prepare_datasets(logs_dir):
     """
-    Checks RAW_DATASET and online datasets. If online datasets are missing,
-    automatically downloads them, converts custom RAW XMLs, remaps labels,
-    and merges everything into datasets/combined_carparts.
+    Full dataset preparation pipeline using the structured layout:
+
+      datasets/raw/                    <- HITL ground-truth (deduplicated, never modified)
+      datasets/external/               <- open-source datasets in original format
+        carparts-seg/
+        dsmlr/
+      datasets/matched/                <- external datasets converted to 23-class YOLO taxonomy
+        carparts-seg/
+        dsmlr/
+      datasets/combined_carparts/      <- final training set, rebuilt fresh every run
+
+    Sequence (VM-ready):
+      0. Interactive cleanup prompt (or --yes-clean-* flags)
+      1. Migrate raw data from RAW_DATASET/  (prepare_raw_dataset + setup_dataset_structure)
+      2. Download external datasets if missing  (carparts-seg from Ultralytics, DSMLR from GitHub)
+      3. Run taxonomy matchers  (match_carparts_seg, match_dsmlr)
+      4. Wipe + rebuild combined_carparts from raw/ + matched/*
+      5. Regenerate COCO JSON for Mask R-CNN / Mask2Former
+      6. Verify labels
+      7. Generate Markdown report
+
+    Adding a new external source in future:
+      - Drop it into datasets/external/<name>/
+      - Write scripts/data/match_<name>.py that outputs to datasets/matched/<name>/
+      - Rerun this pipeline — combine_datasets.py auto-discovers matched/* directories.
     """
+    # ── Step 0: Interactive cleanup prompt ────────────────────────────────────
+    interactive_cleanup_prompt()
+
     datasets_dir = PROJECT_ROOT / "datasets"
     os.makedirs(datasets_dir, exist_ok=True)
     log_path = os.path.join(logs_dir, "01_smart_dataset_prep.log")
 
-    # 1. Process custom RAW_DATASET if files exist
+    # ── Step 1a: Convert RAW_DATASET XML → custom_carparts (YOLO) ────────────
     raw_images = PROJECT_ROOT / "RAW_DATASET" / "IMAGES"
     raw_xmls   = PROJECT_ROOT / "RAW_DATASET" / "XML"
-    has_raw = raw_images.exists() and any(raw_images.iterdir()) and raw_xmls.exists() and any(raw_xmls.iterdir())
-    
+    has_raw = (raw_images.exists() and any(raw_images.iterdir()) and
+               raw_xmls.exists()   and any(raw_xmls.iterdir()))
     if has_raw:
-        print("[*] Found custom RAW_DATASET files. Converting XML to YOLO format...")
+        print("[*] Found RAW_DATASET — converting XML annotations to YOLO format...")
         run_cmd_and_log(["python", "scripts/data/prepare_raw_dataset.py"], log_path, "raw_prep")
     else:
-        print("[INFO] RAW_DATASET/IMAGES or XML is empty -- skipping custom raw prep.")
+        print("[INFO] RAW_DATASET/IMAGES or XML is empty — skipping XML conversion.")
 
-    # 2. Check and Download Ultralytics carparts-seg (133 MB)
-    carparts_dir = datasets_dir / "carparts-seg"
-    if not carparts_dir.exists() or not any(carparts_dir.iterdir()):
-        print("\n[*] Downloading online dataset: Ultralytics carparts-seg (133 MB)...")
+    # ── Step 1b: Migrate custom_carparts → datasets/raw/ (dedup) ─────────────
+    raw_dir = datasets_dir / "raw"
+    if not raw_dir.exists() or not any((raw_dir / "images").rglob("*.*") if (raw_dir / "images").exists() else []):
+        print("[*] Migrating deduplicated HITL data to datasets/raw/ ...")
+        run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+    else:
+        print("[OK] datasets/raw/ already populated.")
+
+    # ── Step 2a: Download carparts-seg if missing ─────────────────────────────
+    # VM note: downloads to datasets/carparts-seg/ (legacy location), then
+    # setup_dataset_structure.py migrates it to datasets/external/carparts-seg/.
+    carparts_ext = datasets_dir / "external" / "carparts-seg"
+    carparts_legacy = datasets_dir / "carparts-seg"
+    if carparts_ext.exists() and any(carparts_ext.iterdir()):
+        print("[OK] datasets/external/carparts-seg/ already populated.")
+    elif carparts_legacy.exists() and any(carparts_legacy.iterdir()):
+        # Legacy location exists — just migrate
+        print("[*] Migrating carparts-seg from legacy location to external/carparts-seg/ ...")
+        run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+    else:
+        # Fresh VM — must download
+        print("\n[*] datasets/external/carparts-seg/ not found — downloading from Ultralytics (133 MB)...")
         zip_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/carparts-seg.zip"
         zip_file = datasets_dir / "carparts-seg.zip"
         try:
-            import urllib.request, zipfile
-            print("    Downloading carparts-seg.zip...")
-            urllib.request.urlretrieve(zip_url, zip_file)
-            print("    Extracting to ./datasets/carparts-seg...")
-            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
-                zip_ref.extractall(carparts_dir)
-            if zip_file.exists():
-                os.remove(zip_file)
-            print("[OK] Ultralytics carparts-seg downloaded and extracted!")
+            import urllib.request
+            import zipfile as _zipfile
+
+            def _reporthook(count, block_size, total_size):
+                pct = min(100, int(count * block_size * 100 / total_size)) if total_size > 0 else 0
+                if count % 50 == 0:
+                    print(f"  Downloading... {pct}%", end="\r", flush=True)
+
+            urllib.request.urlretrieve(zip_url, zip_file, reporthook=_reporthook)
+            print()
+            # Extract into datasets/carparts-seg/ (setup_dataset_structure expects this location)
+            extract_target = datasets_dir / "carparts-seg"
+            with _zipfile.ZipFile(zip_file, "r") as zf:
+                # carparts-seg.zip may contain a top-level 'carparts-seg/' folder
+                # or files directly — handle both by extracting to a temp dir
+                members = zf.namelist()
+                has_prefix = all(m.startswith("carparts-seg/") for m in members if m)
+                if has_prefix:
+                    # strip the prefix: extract to datasets/ so carparts-seg/ lands correctly
+                    zf.extractall(datasets_dir)
+                else:
+                    extract_target.mkdir(parents=True, exist_ok=True)
+                    zf.extractall(extract_target)
+            zip_file.unlink(missing_ok=True)
+            print("[OK] carparts-seg downloaded and extracted to datasets/carparts-seg/.")
+            # Now migrate to external/
+            run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
         except Exception as e:
-            print(f"[WARN] Failed to download carparts-seg: {e}")
+            print(f"[WARN] Failed to auto-download carparts-seg: {e}")
+            print("       Please manually place carparts-seg/ in datasets/carparts-seg/ and re-run.")
+
+    # ── Step 2b: Download / split DSMLR if missing ───────────────────────────
+    # VM note: clones to datasets/dsmlr-carparts/, splits to datasets/dsmlr-carparts-split/,
+    # then setup_dataset_structure.py migrates it to datasets/external/dsmlr/.
+    dsmlr_ext = datasets_dir / "external" / "dsmlr"
+    dsmlr_legacy_split = datasets_dir / "dsmlr-carparts-split"
+    dsmlr_raw = datasets_dir / "dsmlr-carparts"
+    if dsmlr_ext.exists() and any(dsmlr_ext.iterdir()):
+        print("[OK] datasets/external/dsmlr/ already populated.")
+    elif dsmlr_legacy_split.exists() and any(dsmlr_legacy_split.iterdir()):
+        # Legacy split exists — just migrate
+        print("[*] Migrating dsmlr from legacy location to external/dsmlr/ ...")
+        run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
     else:
-        print("[OK] Online dataset 'carparts-seg' already exists.")
+        # Fresh VM — must clone and split
+        if not dsmlr_raw.exists() or not any(dsmlr_raw.iterdir()):
+            print("\n[*] datasets/external/dsmlr/ not found — cloning DSMLR Car-Parts-Segmentation (~24 MB)...")
+            cmd = ["git", "clone", "--depth", "1",
+                   "https://github.com/dsmlr/Car-Parts-Segmentation.git",
+                   str(dsmlr_raw)]
+            ok = run_cmd_and_log(cmd, log_path, "dsmlr_clone")
+            if not ok:
+                print("[WARN] Failed to clone DSMLR repo. Skipping DSMLR dataset.")
+        if dsmlr_raw.exists() and any(dsmlr_raw.iterdir()):
+            print("[*] Splitting DSMLR into train/val/test (80/10/10)...")
+            run_cmd_and_log(["python", "scripts/data/prepare_dsmlr_split.py"], log_path, "dsmlr_split")
+            print("[*] Migrating DSMLR split to external/dsmlr/ ...")
+            run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
 
-    # 3. Check and Download DSMLR dataset
-    dsmlr_dir = datasets_dir / "dsmlr-carparts"
-    if not dsmlr_dir.exists() or not any(dsmlr_dir.iterdir()):
-        print("\n[*] Cloning online dataset: DSMLR Car-Parts-Segmentation repo...")
-        cmd = ["git", "clone", "https://github.com/dsmlr/Car-Parts-Segmentation.git", str(dsmlr_dir)]
-        run_cmd_and_log(cmd, log_path, "dsmlr_clone")
+    # ── Step 3: Run taxonomy matchers ────────────────────────────────────────
+    matched_cs    = datasets_dir / "matched" / "carparts-seg"
+    matched_dsmlr = datasets_dir / "matched" / "dsmlr"
+
+    def _is_populated(d: Path) -> bool:
+        img_dir = d / "images"
+        return img_dir.exists() and any(img_dir.rglob("*.*"))
+
+    if not _is_populated(matched_cs):
+        if (datasets_dir / "external" / "carparts-seg").exists():
+            print("\n[*] Running carparts-seg taxonomy matcher...")
+            run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
+        else:
+            print("[WARN] external/carparts-seg/ missing — skipping matcher.")
     else:
-        print("[OK] Online dataset 'dsmlr-carparts' already exists.")
+        print("[OK] matched/carparts-seg/ already populated.")
 
-    # 4. Auto-split DSMLR if present
-    if dsmlr_dir.exists():
-        print("\n[*] Preparing DSMLR splits...")
-        run_cmd_and_log(["python", "scripts/data/prepare_dsmlr_split.py"], log_path, "dsmlr_split")
+    if not _is_populated(matched_dsmlr):
+        if (datasets_dir / "external" / "dsmlr").exists():
+            print("\n[*] Running DSMLR taxonomy matcher...")
+            run_cmd_and_log(["python", "scripts/data/match_dsmlr.py"], log_path, "match_dsmlr")
+        else:
+            print("[WARN] external/dsmlr/ missing — skipping matcher.")
+    else:
+        print("[OK] matched/dsmlr/ already populated.")
 
-    # 5. Remap labels for canonical taxonomy
-    print("\n[*] Remapping label taxonomies...")
-    run_cmd_and_log(["python", "scripts/data/remap_github_labels.py", "--format", "yolo", "--path", "datasets/carparts-seg"], log_path, "remap_yolo")
-
-    # 6. Combine Datasets into combined_carparts
-    print("\n[*] Combining RAW_DATASET + Online datasets...")
+    # ── Step 4: Rebuild combined_carparts (always wipe + rebuild) ────────────
+    print("\n[*] Rebuilding combined_carparts from raw/ + matched/* ...")
     run_cmd_and_log(["python", "scripts/data/combine_datasets.py"], log_path, "combine_datasets")
 
-    # 7. Convert to COCO JSON format
-    print("\n[*] Converting combined dataset to COCO format...")
-    run_cmd_and_log(["python", "scripts/data/yolo_to_coco.py", "--dataset", "combined_carparts"], log_path, "yolo_to_coco")
+    # ── Step 5: Regenerate COCO JSON ─────────────────────────────────────────
+    print("\n[*] Regenerating COCO JSON for Mask R-CNN / Mask2Former...")
+    run_cmd_and_log(["python", "scripts/data/yolo_to_coco.py", "--dataset", "combined_carparts"],
+                    log_path, "yolo_to_coco")
 
-    print("\n[OK] Smart Auto-Preparation Complete! Combined dataset: './datasets/combined_carparts'")
+    # ── Step 6: Verify labels ────────────────────────────────────────────────
+    print("\n[*] Verifying labels (corrupt image scan)...")
+    run_cmd_and_log(["python", "scripts/data/verify_labels.py",
+                     "--dir", str(datasets_dir / "combined_carparts")],
+                    log_path, "verify_labels")
+
+    print("\n[OK] Dataset preparation complete. Training set: './datasets/combined_carparts'")
     return "combined_carparts"
 
 def analyze_dataset(dataset_name="combined_carparts"):
@@ -416,6 +656,22 @@ def run_dataset_prep(logs_dir):
     return ensure_and_prepare_datasets(logs_dir)
 
 
+def _generate_report(run_config_path, logs_dir):
+    """
+    Generate Markdown pipeline report to:
+      - logs/pipeline_reports/pipeline_report_<timestamp>.md  (archived)
+      - logs/latest_pipeline_report.md                         (always latest)
+    Called automatically after dataset preparation.
+    """
+    try:
+        cmd = ["python", "scripts/data/generate_pipeline_report.py",
+               "--run_config", run_config_path]
+        log_path = os.path.join(logs_dir, "pipeline_report.log")
+        run_cmd_and_log(cmd, log_path, "generate_pipeline_report")
+    except Exception as e:
+        print(f"[WARN] Failed to generate pipeline report: {e}")
+
+
 def save_run_config(logs_dir, task_name, dataset, models=None, hparams=None, extra=None):
     """
     Write run_config.json into logs_dir so you always know what settings
@@ -485,11 +741,162 @@ def save_run_config(logs_dir, task_name, dataset, models=None, hparams=None, ext
     config_path = os.path.join(logs_dir, "run_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
-    print(f"\n[OK] Run config saved → {config_path}")
+    print(f"\n[OK] Run config saved -> {config_path}")
     return config_path
 
 
+def check_azure_disk():
+    cwd_str = str(PROJECT_ROOT)
+    if cwd_str.startswith("/mnt/"):
+        print("############################################################", file=sys.stderr)
+        print(f"  WARNING: Running from {cwd_str}", file=sys.stderr)
+        print("  If this is Azure's temporary resource disk, it will be WIPED", file=sys.stderr)
+        print("  when you Stop (Deallocate) the VM. Move to /home first!", file=sys.stderr)
+        print("############################################################", file=sys.stderr)
+        import time
+        time.sleep(3)
+
+
+def run_evaluation(dataset, base_out_dir, logs_dir):
+    print("\n========================================")
+    print(" Running Evaluation")
+    print("========================================")
+
+    last_weights_file = PROJECT_ROOT / "last_yolo_weights_path.txt"
+    if last_weights_file.exists():
+        yolo_weights = last_weights_file.read_text(encoding="utf-8").strip()
+    else:
+        yolo_weights = str(Path(base_out_dir) / "yolo11m-seg" / "weights" / "best.pt")
+
+    mrcnn_weights = str(Path(base_out_dir) / "maskrcnn" / "best_model.pt")
+    fastrcnn_weights = str(Path(base_out_dir) / "fastrcnn" / "best_model.pt")
+
+    eval_jobs = [
+        ("06a_eval_yolo",     ["--model", "yolo",     "--weights", yolo_weights,     "--dataset", dataset]),
+        ("06c_eval_maskrcnn", ["--model", "maskrcnn", "--weights", mrcnn_weights,    "--dataset", dataset]),
+        ("06d_eval_fastrcnn", ["--model", "fastrcnn", "--weights", fastrcnn_weights, "--dataset", dataset]),
+    ]
+
+    for label, eval_args in eval_jobs:
+        weights_path = Path(eval_args[3])
+        if not weights_path.exists():
+            print(f"  [skip] {label}: weights not found at {weights_path}")
+            continue
+        log_path = os.path.join(logs_dir, f"{label}.log")
+        cmd = ["python", "scripts/evaluation/evaluate_confusion_matrix.py"] + eval_args
+        print(f"[*] {label}...")
+        run_cmd_and_log(cmd, log_path, label)
+
+    # Compare all models
+    log_path = os.path.join(logs_dir, "07_compare_all.log")
+    cmd = ["python", "scripts/evaluation/compare_all_models.py", "--dataset", dataset]
+    print("[*] Comparing all models...")
+    run_cmd_and_log(cmd, log_path, "compare_all_models")
+
+
+def generate_excel_report(base_out_dir):
+    """
+    Generates car_part_training_results.xlsx containing:
+    - Summary sheet (Model, Best Epoch, Best Mask mAP50)
+    - Per-model epoch detail sheets with losses and mAP metrics.
+    """
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill
+    except ImportError:
+        print("[WARN] openpyxl is not installed. Skipping Excel report generation.")
+        return
+
+    base_path = Path(base_out_dir)
+    if not base_path.exists():
+        return
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)  # Remove default blank sheet
+
+    bold_font = Font(bold=True)
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+
+    summary_rows = []
+    model_dirs = sorted([d for d in base_path.iterdir() if d.is_dir() and d.name != "logs"])
+
+    for mdir in model_dirs:
+        model_name = mdir.name
+        metrics_csv = mdir / "metrics.csv"
+        epoch_data = []
+
+        if metrics_csv.exists():
+            import csv
+            try:
+                with open(metrics_csv, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for r in reader:
+                        epoch_data.append(r)
+            except Exception as e:
+                print(f"[WARN] Could not read {metrics_csv}: {e}")
+        else:
+            for jf in sorted(mdir.glob("*.json")):
+                try:
+                    with open(jf, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        if isinstance(data, dict) and "epoch" in data:
+                            epoch_data.append(data)
+                except Exception:
+                    pass
+
+        if not epoch_data:
+            continue
+
+        sheet_title = f"{model_name[:24]}_Epochs".replace("-", "_")
+        ws = wb.create_sheet(title=sheet_title)
+
+        headers = ["Epoch", "Train Loss", "Val Loss", "Mask mAP50", "Box mAP50"]
+        ws.append(headers)
+        for col_num in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.font = bold_font
+            cell.fill = header_fill
+
+        best_map = -1.0
+        best_epoch = 1
+        for row in epoch_data:
+            ep = row.get("epoch", "")
+            t_loss = row.get("train_loss") or (row.get("train_stats", {}).get("train_loss") if isinstance(row.get("train_stats"), dict) else "")
+            v_loss = row.get("val_loss") or (row.get("train_stats", {}).get("val_loss") if isinstance(row.get("train_stats"), dict) else "")
+            m_map = row.get("map50_mask") or row.get("best_mask_map50", "")
+            b_map = row.get("map50_box", "")
+
+            try:
+                m_map_val = float(m_map)
+                if m_map_val > best_map:
+                    best_map = m_map_val
+                    best_epoch = ep
+            except (ValueError, TypeError):
+                pass
+
+            ws.append([ep, t_loss, v_loss, m_map, b_map])
+
+        summary_rows.append((model_name, best_epoch, best_map if best_map >= 0 else "N/A"))
+
+    summary_ws = wb.create_sheet(title="Summary", index=0)
+    summary_headers = ["Model", "Best Epoch", "Best Mask mAP50"]
+    summary_ws.append(summary_headers)
+    for col_num in range(1, len(summary_headers) + 1):
+        cell = summary_ws.cell(row=1, column=col_num)
+        cell.font = bold_font
+        cell.fill = header_fill
+
+    summary_rows.sort(key=lambda x: (isinstance(x[2], (int, float)), x[2]), reverse=True)
+    for row in summary_rows:
+        summary_ws.append(list(row))
+
+    excel_path = base_path / "car_part_training_results.xlsx"
+    wb.save(excel_path)
+    print(f"\n[OK] Excel report saved to {excel_path}")
+
+
 def main():
+    check_azure_disk()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     base_out_dir = str(PROJECT_ROOT / "runs_comparison" / f"run_{timestamp}")
     logs_dir = os.path.join(base_out_dir, "logs")
@@ -500,7 +907,7 @@ def main():
         f.write(f"Project root: {PROJECT_ROOT}\n")
 
     display_main_menu()
-    choice = prompt("Enter choice [1-12]: ")
+    choice = prompt("Enter choice [1-14]: ")
 
     if choice == "1":
         print("\n[TASK] Auto-annotation (DINO + SAM2)")
@@ -517,7 +924,9 @@ def main():
         models = collect_models()
         hparams = Hyperparams(models)
         dataset = run_dataset_prep(logs_dir)
-        save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
+        run_config_path = save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
+        # Generate Markdown report after dataset prep
+        _generate_report(run_config_path, logs_dir)
         print(f"\n[INFO] Using dataset: {dataset}")
 
         if models.yolo:
@@ -594,6 +1003,9 @@ def main():
                    "--val_interval", str(hparams.m2f_val_interval)]
             run_cmd_and_log(cmd, log_path, "train_segformer")
 
+        print("\nAll training done. Generating Excel report...")
+        generate_excel_report(base_out_dir)
+
     elif choice == "3":
         print("\n[TASK] Inference on Test Images")
         inp = prompt_default("Test images directory", "./test")
@@ -609,7 +1021,8 @@ def main():
         models = collect_models()
         hparams = Hyperparams(models)
         dataset = run_dataset_prep(logs_dir)
-        save_run_config(logs_dir, "Full Pipeline (Prep → Train → Evaluate)", dataset, models, hparams)
+        run_config_path = save_run_config(logs_dir, "Full Pipeline (Prep → Train → Evaluate)", dataset, models, hparams)
+        _generate_report(run_config_path, logs_dir)
         print(f"\n[INFO] Using dataset: {dataset}")
         print("[*] Running local training...")
         if models.yolo:
@@ -675,6 +1088,10 @@ def main():
                    "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
                    "--val_interval", str(hparams.m2f_val_interval)]
             run_cmd_and_log(cmd, log_path, "train_segformer")
+
+        run_evaluation(dataset, base_out_dir, logs_dir)
+        print("\nAll steps done. Generating Excel report...")
+        generate_excel_report(base_out_dir)
 
     elif choice == "5":
         print("\n[TASK] Automated Azure ML Training")
@@ -748,26 +1165,79 @@ def main():
         run_cmd_and_log(cmd, log_path, "setup_clean")
 
     elif choice == "7":
-        print("\n[TASK] Smart Auto-Prepare Dataset")
+        print("\n[TASK] Smart Auto-Prepare Dataset (VM-Ready Full Pipeline)")
         combined_name = ensure_and_prepare_datasets(logs_dir)
+        # Save a minimal run config so the report has something to read
+        run_config_path = save_run_config(logs_dir, "Auto-Prepare Dataset", combined_name)
+        # Generate Markdown pipeline report
+        _generate_report(run_config_path, logs_dir)
         print(f"\n[OK] Dataset ready in './datasets/{combined_name}'!")
         analyze_dataset(combined_name)
 
     elif choice == "8":
+        print("\n[TASK] Dataset Preprocessing Tools")
+        print("  a) yolo_to_coco    -- Convert YOLO polygons -> COCO JSON (parallel)")
+        print("  b) combine         -- Merge multiple YOLO datasets (parallel copy)")
+        print("  c) verify_labels   -- Scan for corrupt images (report-only)")
+        print("  d) hash_dataset    -- Write blake3 checksums manifest")
+        sub = prompt("Enter sub-option [a-d]: ")
+        if sub == "a":
+            print("  Available datasets: carparts-seg | custom_carparts | combined_carparts")
+            ds = prompt_default("Dataset", "carparts-seg")
+            workers = prompt_default("Workers", "8")
+            cmd = ["python", "scripts/data/yolo_to_coco.py", "--dataset", ds, "--num_workers", str(workers)]
+            log_path = os.path.join(logs_dir, "preprocess_yolo_to_coco.log")
+            run_cmd_and_log(cmd, log_path, "yolo_to_coco")
+        elif sub == "b":
+            dirs_raw = prompt_default("Dataset dirs (comma-separated)", "datasets/carparts-seg,datasets/custom_carparts")
+            out = prompt_default("Output dir", "datasets/combined_carparts")
+            workers = prompt_default("Workers", "8")
+            cmd = ["python", "scripts/data/combine_datasets.py", "--datasets", dirs_raw, "--out_dir", out, "--workers", str(workers)]
+            log_path = os.path.join(logs_dir, "preprocess_combine.log")
+            run_cmd_and_log(cmd, log_path, "combine_datasets")
+        elif sub == "c":
+            dir_raw = prompt_default("Dataset directory to verify", "datasets")
+            cmd = ["python", "scripts/data/verify_labels.py", "--dir", dir_raw]
+            log_path = os.path.join(logs_dir, "preprocess_verify.log")
+            run_cmd_and_log(cmd, log_path, "verify_labels")
+        elif sub == "d":
+            dir_raw = prompt_default("Directory to hash", "datasets")
+            out_manifest = prompt_default("Output manifest path", f"{dir_raw}/checksums.blake3")
+            workers = prompt_default("Workers", "8")
+            cmd = ["python", "scripts/data/hash_dataset.py", "--dir", dir_raw, "--out", out_manifest, "--workers", str(workers)]
+            log_path = os.path.join(logs_dir, "preprocess_hash.log")
+            run_cmd_and_log(cmd, log_path, "hash_dataset")
+        else:
+            print(f"[ERROR] Unknown sub-option '{sub}'")
+
+    elif choice == "9":
         print("\n[TASK] Dataset Analytics")
         ds = prompt_default("Dataset name (under ./datasets)", "combined_carparts")
         analyze_dataset(ds)
 
-    elif choice == "9":
+    elif choice == "10":
         print("\n[TASK] Benchmark Preprocessing")
         ds = prompt_default("Dataset to benchmark", "carparts-seg")
-        print(f"[*] Running Python yolo_to_coco benchmark on '{ds}'...")
-        start_time = datetime.datetime.now()
-        subprocess.run(["python", "scripts/data/yolo_to_coco.py", "--dataset", ds])
-        elapsed = (datetime.datetime.now() - start_time).total_seconds()
-        print(f"\n[BENCHMARK] Python yolo_to_coco completed in {elapsed:.3f} seconds.")
+        print()
+        print(f"[*] Benchmarking yolo_to_coco on '{ds}'...")
+        t0 = datetime.datetime.now()
+        subprocess.run(["python", "scripts/data/yolo_to_coco.py", "--dataset", ds], cwd=PROJECT_ROOT)
+        t_coco = (datetime.datetime.now() - t0).total_seconds()
 
-    elif choice == "10":
+        print(f"\n[*] Benchmarking verify_labels on 'datasets/{ds}'...")
+        t0 = datetime.datetime.now()
+        subprocess.run(["python", "scripts/data/verify_labels.py",
+                        "--dir", str(PROJECT_ROOT / "datasets" / ds)], cwd=PROJECT_ROOT)
+        t_verify = (datetime.datetime.now() - t0).total_seconds()
+
+        print("\n╔══════════════════╦══════════════╗")
+        print("║ Step             ║ Time (s)     ║")
+        print("╠══════════════════╬══════════════╣")
+        print(f"║ yolo_to_coco     ║ {t_coco:>12.3f} ║")
+        print(f"║ verify_labels    ║ {t_verify:>12.3f} ║")
+        print("╚══════════════════╩══════════════╝")
+
+    elif choice == "11":
         print("\n[TASK] Quick Pipeline Check -- Fast 3-Epoch Dry Run on Azure ML (All Models)")
         local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
         save_run_config(logs_dir, "Quick Pipeline Check (3-epoch dry run)", dataset=local_dir,
@@ -779,7 +1249,7 @@ def main():
                "--batch", "-1", "--workers", "8", "--auto_upload"]
         run_cmd_and_log(cmd, log_path, "azure_dryrun_all")
 
-    elif choice == "11":
+    elif choice == "12":
         print("\n[TASK] GPU Capacity & Batch Size / Worker Stress Tester")
         mode = prompt_default("Run mode (local / azure)", "local")
         ds = prompt_default("Dataset path", "./datasets/combined_carparts")
@@ -789,7 +1259,13 @@ def main():
         cmd = ["python", "scripts/training/capacity_check.py", "--dataset", ds, "--mode", mode]
         run_cmd_and_log(cmd, log_path, "capacity_check")
 
-    elif choice == "12":
+    elif choice == "13":
+        print("\n[TASK] Cleanup Pipeline — Wipe stale outputs (interactive)")
+        log_path = os.path.join(logs_dir, "00_cleanup.log")
+        cmd = ["python", "scripts/data/cleanup_pipeline.py"]
+        run_cmd_and_log(cmd, log_path, "cleanup_pipeline")
+
+    elif choice == "14":
         print("Exiting.")
         sys.exit(0)
 

@@ -5,15 +5,31 @@ Converts a YOLO-segmentation formatted dataset (images/ + labels/ with
 normalized polygon .txt files, like Ultralytics carparts-seg) into COCO JSON
 format, which Mask2Former and MaskDINO both expect for training.
 
+Uses `imagesize` for header-only image dimension reads (no full pixel decode)
+and ThreadPoolExecutor for parallel processing.
+
 Usage:
     python yolo_to_coco.py --dataset carparts-seg
 """
 
 import os
+import sys
 import argparse
 import json
 from pathlib import Path
-from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Ensure UTF-8 output on Windows terminals
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+try:
+    import imagesize
+    _USE_IMAGESIZE = True
+except ImportError:
+    from PIL import Image
+    _USE_IMAGESIZE = False
 
 CARPARTS_SEG_CLASSES = [
     "back_bumper", "back_door", "back_glass", "back_left_door", "back_left_light",
@@ -24,61 +40,97 @@ CARPARTS_SEG_CLASSES = [
 ]
 
 
+def _get_image_size(img_path: Path):
+    """Read image dimensions from header only — no pixel decode."""
+    if _USE_IMAGESIZE:
+        return imagesize.get(str(img_path))  # returns (w, h)
+    else:
+        with Image.open(img_path) as im:
+            return im.size  # (w, h)
+
+
 def yolo_polygon_to_coco(line, img_w, img_h):
     parts = line.strip().split()
+    if len(parts) < 7:
+        return None
     class_id = int(parts[0])
     coords = list(map(float, parts[1:]))
+    if len(coords) < 6 or len(coords) % 2 != 0:
+        return None
     # normalized x,y pairs -> pixel coords
     points = []
     for i in range(0, len(coords), 2):
-        x = coords[i] * img_w
-        y = coords[i + 1] * img_h
-        points.extend([x, y])
+        points.extend([coords[i] * img_w, coords[i + 1] * img_h])
 
     xs = points[0::2]
     ys = points[1::2]
     x_min, y_min = min(xs), min(ys)
     width, height = max(xs) - x_min, max(ys) - y_min
-    area = 0.5 * abs(sum(xs[i] * ys[i - 1] - xs[i - 1] * ys[i] for i in range(len(xs))))
+    n = len(xs)
+    area = 0.5 * abs(sum(xs[i] * ys[i - 1] - xs[i - 1] * ys[i] for i in range(n)))
 
     return class_id, points, [x_min, y_min, width, height], area
 
 
-def convert_split(images_dir, labels_dir, class_names, out_json_path):
+def _process_image(args):
+    """Worker: read image header + parse its label file. Returns (img_id, entry) or None."""
+    img_id, img_path, labels_dir = args
+    try:
+        w, h = _get_image_size(img_path)
+    except Exception:
+        return None
+
+    annotations = []
+    label_path = labels_dir / (img_path.stem + ".txt")
+    if label_path.exists():
+        with open(label_path) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                result = yolo_polygon_to_coco(line, w, h)
+                if result:
+                    annotations.append(result)
+
+    return img_id, img_path.name, w, h, annotations
+
+
+def convert_split(images_dir, labels_dir, class_names, out_json_path, num_workers=8):
     images_dir = Path(images_dir)
     labels_dir = Path(labels_dir)
 
+    image_files = sorted([
+        f for f in images_dir.glob("*")
+        if f.suffix.lower() in (".jpg", ".jpeg", ".png")
+    ])
+
+    # Parallel header reads + label parsing
+    tasks = [(img_id, img_path, labels_dir) for img_id, img_path in enumerate(image_files)]
+    results = [None] * len(tasks)
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        future_to_idx = {executor.submit(_process_image, t): i for i, t in enumerate(tasks)}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            results[idx] = future.result()
+
+    # Assemble COCO JSON in deterministic order
     coco = {
         "images": [],
         "annotations": [],
         "categories": [{"id": i, "name": name} for i, name in enumerate(class_names)],
     }
-
     ann_id = 0
-    image_files = sorted([f for f in images_dir.glob("*") if f.suffix.lower() in (".jpg", ".jpeg", ".png")])
-
-    for img_id, img_path in enumerate(image_files):
-        with Image.open(img_path) as im:
-            w, h = im.size
-
-        coco["images"].append({
-            "id": img_id, "file_name": img_path.name, "width": w, "height": h,
-        })
-
-        label_path = labels_dir / (img_path.stem + ".txt")
-        if not label_path.exists():
+    for entry in results:
+        if entry is None:
             continue
-
-        with open(label_path) as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                class_id, seg_points, bbox, area = yolo_polygon_to_coco(line, w, h)
-                coco["annotations"].append({
-                    "id": ann_id, "image_id": img_id, "category_id": class_id,
-                    "segmentation": [seg_points], "bbox": bbox, "area": area, "iscrowd": 0,
-                })
-                ann_id += 1
+        img_id, file_name, w, h, annotations = entry
+        coco["images"].append({"id": img_id, "file_name": file_name, "width": w, "height": h})
+        for class_id, seg_points, bbox, area in annotations:
+            coco["annotations"].append({
+                "id": ann_id, "image_id": img_id, "category_id": class_id,
+                "segmentation": [seg_points], "bbox": bbox, "area": area, "iscrowd": 0,
+            })
+            ann_id += 1
 
     with open(out_json_path, "w") as f:
         json.dump(coco, f)
@@ -88,24 +140,46 @@ def convert_split(images_dir, labels_dir, class_names, out_json_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", required=True, choices=["carparts-seg", "dsmlr-carparts", "custom_carparts", "combined_carparts"])
+    parser.add_argument(
+        "--dataset", required=True,
+        help=(
+            "Dataset name (carparts-seg | custom_carparts | combined_carparts) "
+            "OR a direct path to a dataset directory containing images/ and labels/."
+        )
+    )
+    parser.add_argument("--num_workers", type=int, default=8,
+                        help="Parallel workers for image header reads (default: 8)")
     args = parser.parse_args()
 
-    if args.dataset in ["carparts-seg", "custom_carparts", "combined_carparts"]:
-        root = Path(f"datasets/{args.dataset}")
-        class_names = CARPARTS_SEG_CLASSES
-        for split in ["train", "val", "test"]:
-            images_dir = root / "images" / split
-            labels_dir = root / "labels" / split
-            if not images_dir.exists():
-                print(f"[skip] {images_dir} not found")
-                continue
-            out_path = root / f"coco_{split}.json"
-            convert_split(images_dir, labels_dir, class_names, out_path)
+    if not _USE_IMAGESIZE:
+        print("[WARN] `imagesize` not installed — falling back to PIL (slower). "
+              "Install with: pip install imagesize")
 
+    # Resolve dataset path — accept both short names and full/relative paths
+    ds_path = Path(args.dataset)
+    if ds_path.is_dir():
+        root = ds_path.resolve()
+    elif args.dataset in ("carparts-seg", "custom_carparts", "combined_carparts"):
+        root = Path(f"datasets/{args.dataset}").resolve()
     elif args.dataset == "dsmlr-carparts":
-        # DSMLR is already COCO format after prepare_dsmlr_split.py -- nothing to convert.
-        print("[i] dsmlr-carparts is already prepared as COCO JSON by prepare_dsmlr_split.py -- skipping.")
+        print("[i] dsmlr-carparts is already in COCO format — skipping.")
+        return
+    else:
+        root = Path(f"datasets/{args.dataset}").resolve()
+
+    if not root.exists():
+        print(f"[ERROR] Dataset directory not found: {root}")
+        return
+
+    class_names = CARPARTS_SEG_CLASSES
+    for split in ["train", "val", "test"]:
+        images_dir = root / "images" / split
+        labels_dir = root / "labels" / split
+        if not images_dir.exists():
+            print(f"[skip] {images_dir} not found")
+            continue
+        out_path = root / f"coco_{split}.json"
+        convert_split(images_dir, labels_dir, class_names, out_path, args.num_workers)
 
 
 if __name__ == "__main__":

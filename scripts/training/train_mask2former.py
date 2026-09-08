@@ -28,13 +28,6 @@ except ImportError:
     print("[ERROR] HuggingFace transformers is required for Mask2Former training. Install with: pip install transformers")
     sys.exit(1)
 
-# -- Rust DataLoader (optional speedup) ----------------------------------------
-try:
-    from scripts.training.rust_dataloader_bridge import build_rust_loader, RUST_AVAILABLE
-except ImportError:
-    RUST_AVAILABLE = False
-    build_rust_loader = None
-
 
 class COCOMask2FormerDataset(Dataset):
     def __init__(self, images_dir, json_file, processor):
@@ -129,7 +122,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--num_workers", type=int, default=8,
+                        help="DataLoader workers (default raised 4->8 to match train_maskrcnn.py "
+                             "and keep workers ahead of the GPU between batches).")
     parser.add_argument("--output_dir", default="runs_comparison/mask2former")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
     parser.add_argument("--val_interval", type=int, default=5,
@@ -171,39 +166,21 @@ def main():
     train_ds = COCOMask2FormerDataset(train_images, train_json, processor)
     val_ds   = COCOMask2FormerDataset(val_images, val_json, processor)
 
-    # -- DataLoader: use Rust-parallel loader when available ------------------
-    if RUST_AVAILABLE:
-        print("[OK] Using Rust-parallel DataLoader (PyO3 + Rayon) for image decode")
-        train_loader = build_rust_loader(
-            json_path=str(train_json),
-            images_dir=str(train_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=True,
-            num_workers=0,
-            augment=True,
-            format="mask2former",
-        ) or DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                        collate_fn=collate_fn, num_workers=args.num_workers)
-        val_loader = build_rust_loader(
-            json_path=str(val_json),
-            images_dir=str(val_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=False,
-            num_workers=0,
-            augment=False,
-            format="mask2former",
-        ) or DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                        collate_fn=collate_fn, num_workers=args.num_workers)
-    else:
-        print("[INFO] Rust DataLoader not found -- using Python DataLoader.")
-        train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
-                                  collate_fn=collate_fn, num_workers=args.num_workers)
-        val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
-                                  collate_fn=collate_fn, num_workers=args.num_workers)
+    train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
+                              collate_fn=collate_fn, num_workers=args.num_workers,
+                              pin_memory=True, persistent_workers=args.num_workers > 0,
+                              prefetch_factor=2 if args.num_workers > 0 else None)
+    val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
+                              collate_fn=collate_fn, num_workers=args.num_workers,
+                              pin_memory=True, persistent_workers=args.num_workers > 0,
+                              prefetch_factor=2 if args.num_workers > 0 else None)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # AMP: mixed precision for faster training and lower VRAM usage
+    # (mirrors train_maskrcnn.py which fixed NaN/overflow with float() casting)
+    use_amp = device == "cuda"
+    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    print(f"[OK] AMP (mixed precision): {'enabled' if use_amp else 'disabled (CPU)'}")
 
     run_name = f"mask2former_{ds_path.name if ds_path.is_dir() else args.dataset}"
     logger = UnifiedLogger(os.path.join(args.output_dir, run_name), "mask2former")
@@ -223,16 +200,18 @@ def main():
             mask_labels = [m.to(device) for m in batch["mask_labels"]]
             class_labels = [c.to(device) for c in batch["class_labels"]]
 
-            outputs = model(
-                pixel_values=pixel_values,
-                mask_labels=mask_labels,
-                class_labels=class_labels
-            )
-            loss = outputs.loss
-
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                outputs = model(
+                    pixel_values=pixel_values,
+                    mask_labels=mask_labels,
+                    class_labels=class_labels
+                )
+                loss = outputs.loss
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
 

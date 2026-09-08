@@ -74,9 +74,8 @@ DEFAULT_EXCLUDES = [
     ".venv/**",
     "node_modules",
     "node_modules/**",
-    "target",           # Rust build artifacts
+    "target",           # Build artifacts
     "target/**",
-    "*.pdb",
     "*.pdb",
     "*.exp",
     "*.lib",
@@ -94,7 +93,6 @@ DEFAULT_EXCLUDES = [
     "combined_dataset_*.zip",
     "Job_all_v5_*.zip",
     "CAR_AZURE_backup_*.zip",
-    "rustup-init.exe",
 ]
 
 # Patterns that ARE included (datasets/ is included per user request)

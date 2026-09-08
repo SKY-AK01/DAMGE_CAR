@@ -62,10 +62,7 @@ __pycache__/**
 **/scratch/**
 **/scratch
 
-# Rust / Cargo build artifacts
-**/rust_dataloader/**
-**/rust_dataloader
-rust_dataloader/**
+# Build artifacts
 **/target/**
 **/target
 target/**

@@ -1,39 +1,3 @@
-"""
-train_maskrcnn.py
---------------------
-OPTIONAL bonus model: Mask R-CNN via torchvision.
-This is deliberately the "easy" alternative -- unlike OneFormer/MaskDINO, it
-has NO exotic dependencies (just torchvision, already installed with torch),
-no CUDA-compile step, and no custom data-pipeline quirks. It's a classic
-two-stage detector with no cross-part attention, so it serves as a second
-"no relationship-awareness" data point alongside YOLO, while Mask2Former
-remains the "relationship-aware" comparison point.
-
-Usage:
-    python train_maskrcnn.py --dataset carparts-seg --epochs 10
-
----------------------------------------------------------------------------
-GPU UTILIZATION FIX (A10-12Q vGPU, 15.8G/216G RAM used, only 2-3/18 CPU
-cores busy, GPU util oscillating 5%-94%; unlike train_yolo_seg.py and
-train_mask2former.py, this script had NO fixes applied yet):
----------------------------------------------------------------------------
-  1. DataLoaders had no num_workers/pin_memory/persistent_workers at all,
-     so the CPU-bound cv2.fillPoly mask rasterization in __getitem__ ran
-     single-threaded on the main process and fully blocked the GPU between
-     steps. Added num_workers/pin_memory/persistent_workers to both loaders.
-  2. Added mixed precision (torch.cuda.amp autocast + GradScaler) to train
-     and val loops -- halves compute per step, which matters more than usual
-     on a vGPU profile where every step must fit inside a scheduled
-     time-slice (a flat 100% util isn't achievable on -Q profiles no matter
-     what we change, since the hypervisor time-slices compute across
-     tenants -- this just gets more done inside each window we get).
-  3. Default --batch bumped 4 -> 8, given ~4GB of unused VRAM headroom
-     observed at 8011MiB/12288MiB used during the YOLO run. Mask R-CNN's
-     two-stage RPN+ROI pipeline is heavier per-sample than YOLO, so this is
-     a conservative bump -- watch VRAM on the first run before raising further.
-  4. Default --num_workers added (8), exposed as a flag.
-"""
-
 import argparse
 import json
 import os
@@ -57,13 +21,6 @@ from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResN
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from tqdm import tqdm
-
-# -- Rust DataLoader (optional speedup) ----------------------------------------
-try:
-    from scripts.training.rust_dataloader_bridge import build_rust_loader, RUST_AVAILABLE
-except ImportError:
-    RUST_AVAILABLE = False
-    build_rust_loader = None
 
 
 class CocoMaskRCNNDataset(Dataset):
@@ -205,59 +162,16 @@ def main():
     train_ds = CocoMaskRCNNDataset(train_images, train_json)
     val_ds = CocoMaskRCNNDataset(val_images, val_json)
 
-    # -- DataLoader: use Rust-parallel loader when available ------------------
-    # The Rust DataLoader (PyO3 + Rayon) decodes images in parallel across all
-    # CPU cores without the Python GIL, keeping the GPU consistently fed.
-    # Mask R-CNN requires torchvision-style dict targets, so we use the Rust
-    # loader for image decode only (Python Dataset wraps the Rust-decoded batch).
-    if RUST_AVAILABLE:
-        print("[OK] Using Rust-parallel DataLoader (PyO3 + Rayon) for image decode")
-        # num_workers=0: Rust already parallelises inside; extra workers would
-        # cause redundant process forking with no benefit.
-        train_loader = build_rust_loader(
-            json_path=str(train_json),
-            images_dir=str(train_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=True,
-            num_workers=0,
-            augment=True,
-            format="maskrcnn",
-        ) or DataLoader(
-            train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-        val_loader = build_rust_loader(
-            json_path=str(val_json),
-            images_dir=str(val_images),
-            img_size=640,
-            batch_size=args.batch,
-            shuffle=False,
-            num_workers=0,
-            augment=False,
-            format="maskrcnn",
-        ) or DataLoader(
-            val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-    else:
-        print("[INFO] Rust DataLoader not found -- using Python DataLoader. "
-              "Run `python build_rust_dataloader.py` to enable Rust-parallel decode.")
-        # num_workers/pin_memory/persistent_workers: without these, the
-        # CPU-bound cv2.fillPoly mask rasterization in __getitem__ ran
-        # single-threaded and blocked the GPU between every step.
-        train_loader = DataLoader(
-            train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
-        val_loader = DataLoader(
-            val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
-            num_workers=args.num_workers, pin_memory=True,
-            persistent_workers=args.num_workers > 0,
-        )
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
+        num_workers=args.num_workers, pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
+        num_workers=args.num_workers, pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+    )
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
@@ -291,8 +205,15 @@ def main():
             optimizer.zero_grad()
             with torch.cuda.amp.autocast(enabled=use_amp):
                 loss_dict = model(images, targets)
-                loss = sum(loss_dict.values())
-                
+                # Cast all losses to float32 before summing to avoid the
+                # float16 NaN/overflow in the mask head's BCE loss that occurs
+                # with torch 2.0.1 + torchvision 0.15.2 under autocast.
+                # binary_cross_entropy_with_logits on fp16 logits with large
+                # magnitudes produces ±inf → NaN gradients → device-side assert
+                # in fastrcnn_loss on the next forward pass.
+                # Casting here is zero-cost (scalars) and prevents the overflow.
+                loss = sum(v.float() for v in loss_dict.values())
+
                 # track individual losses
                 for k, v in loss_dict.items():
                     loss_components[k] = loss_components.get(k, 0) + v.item()
@@ -326,7 +247,7 @@ def main():
                     targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
                     with torch.cuda.amp.autocast(enabled=use_amp):
                         loss_dict = model(images, targets)
-                        val_loss += sum(loss_dict.values()).item()
+                        val_loss += sum(v.float() for v in loss_dict.values()).item()
             avg_val_loss = val_loss / len(val_loader)
 
             # Predictions for unified evaluator

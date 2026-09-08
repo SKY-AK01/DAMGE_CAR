@@ -346,9 +346,8 @@ def main():
     print(f"{'='*60}\n")
 
     print("[NEXT STEPS]")
-    print("  1. Build the Rust dataloader:  python build_rust_dataloader.py")
-    print("  2. Install dependencies:        pip install -r requirements.txt")
-    print("  3. Start training:              python orchestrator.py")
+    print("  1. Install dependencies:        pip install -r requirements.txt")
+    print("  2. Start orchestrator:          python orchestrator.py")
     print()
 
 

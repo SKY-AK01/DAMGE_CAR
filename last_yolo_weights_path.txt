@@ -1,1 +1,0 @@
-/home/orchvate/CAR_TRAIN1/runs_comparison/run_20260905_122912/yolo11m-seg/yolo11m-seg_combined_carparts/weights/best.pt

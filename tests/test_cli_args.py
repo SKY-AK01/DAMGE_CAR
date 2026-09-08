@@ -2,7 +2,7 @@ import subprocess
 import os
 
 def test_cli_args():
-    # We want to ensure that the arguments passed by the Rust orchestrator
+    # We want to ensure that the arguments passed by the Python orchestrator (orchestrator.py)
     # are accepted by the python training scripts.
     
     # The orchestrator uses these arguments:

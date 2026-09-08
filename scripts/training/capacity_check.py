@@ -16,21 +16,11 @@ import argparse
 import subprocess
 import threading
 from pathlib import Path
-import builtins
-_orig_print = builtins.print
-def print(*args, **kwargs):
-    kwargs.setdefault("flush", True)
-    _orig_print(*args, **kwargs)
 
-# Ensure UTF-8 output and unbuffered line-streaming
+# Ensure UTF-8 output on Windows terminals
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
-except Exception:
-    pass
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 
@@ -38,7 +28,8 @@ CUDA_PEAK_VRAM_PREFIX = "[CUDA Peak VRAM]"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="GPU Capacity and Batch Size Stress Tester")
-    parser.add_argument("--dataset", default="./datasets/combined_carparts", help="Path to dataset directory")
+    parser.add_argument("--dataset", default="./datasets/combined_carparts",
+                        help="Path to dataset directory (default: ./datasets/combined_carparts)")
     parser.add_argument("--models", nargs="+", default=["yolo11m-seg", "yolo11x-seg", "maskrcnn", "mask2former", "sam2", "maskdino", "segformer"],
                         choices=["yolo11m-seg", "yolo11x-seg", "maskrcnn", "mask2former", "sam2", "maskdino", "segformer"], help="Models to test")
     parser.add_argument("--batch-list", nargs="+", type=int, default=[2, 4, 8, 16, 32, 64],
@@ -166,34 +157,47 @@ def extract_peak_vram_from_output(output_text, fallback_monitor_gb=0.0):
 
 def build_training_cmd(model_name, dataset, batch, workers, quick=True):
     cmd = []
+    # Resolve dataset path so scripts called as subprocesses get an absolute path
+    ds_path = Path(dataset)
+    if not ds_path.is_absolute():
+        ds_path = (PROJECT_ROOT / ds_path).resolve()
+    ds_str = str(ds_path)
+
     if model_name in ["yolo11m-seg", "yolo11x-seg"]:
         cmd = ["python", "scripts/training/train_yolo_seg.py",
-                "--model", model_name, "--dataset", dataset,
+                "--model", model_name, "--dataset", ds_str,
                 "--epochs", "1", "--batch", str(batch), "--workers", str(workers),
-                "--project", f"runs_comparison/capacity_test/{model_name}"]
+                "--cache", "none",
+                "--project", "runs_comparison/capacity_test"]
     elif model_name == "maskrcnn":
         cmd = ["python", "scripts/training/train_maskrcnn.py",
-                "--dataset", dataset, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers), "--output_dir", f"runs_comparison/capacity_test/{model_name}"]
+                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
+                "--num_workers", str(workers),
+                "--amp",   # AMP is default-on in train_maskrcnn; explicit for clarity
+                "--output_dir", "runs_comparison/capacity_test/maskrcnn"]
     elif model_name == "mask2former":
         cmd = ["python", "scripts/training/train_mask2former.py",
-                "--dataset", dataset, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers), "--output_dir", f"runs_comparison/capacity_test/{model_name}"]
+                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
+                "--num_workers", str(workers),
+                "--output_dir", "runs_comparison/capacity_test/mask2former"]
     elif model_name == "sam2":
         cmd = ["python", "scripts/training/train_sam2_seg.py",
-                "--dataset", dataset, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers), "--output_dir", f"runs_comparison/capacity_test/{model_name}"]
+                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
+                "--num_workers", str(workers),
+                "--output_dir", "runs_comparison/capacity_test/sam2"]
     elif model_name == "maskdino":
         cmd = ["python", "scripts/training/train_maskdino.py",
-                "--dataset", dataset, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers), "--output_dir", f"runs_comparison/capacity_test/{model_name}"]
+                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
+                "--num_workers", str(workers),
+                "--output_dir", "runs_comparison/capacity_test/maskdino"]
     elif model_name == "segformer":
         cmd = ["python", "scripts/training/train_segformer.py",
-                "--dataset", dataset, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers), "--output_dir", f"runs_comparison/capacity_test/{model_name}"]
-    
-    if quick:
-        cmd.extend(["--max_batches", "5"])
+                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
+                "--num_workers", str(workers),
+                "--output_dir", "runs_comparison/capacity_test/segformer"]
+
+    if quick and cmd:
+        cmd.extend(["--max_batches", "10"])
     return cmd
 
 def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=True, strategy="top_down"):
@@ -225,8 +229,8 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
     print(f" [OK] GPU: {device_name} ({total_vram:.2f} GB VRAM)")
 
     total_num_images = get_dataset_image_count(dataset)
-    # Quick mode: 120s cap per batch size. Full mode: 10-min cap.
-    timeout_sec = 120 if quick else 600
+    # Quick mode: 3-min cap per batch size. Full mode: 10-min cap.
+    timeout_sec = 180 if quick else 600
 
     results = []
     max_stable_batch = 0
@@ -248,17 +252,14 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
     print(f" {'Batch Size':<12} | {'Status':<15} | {'Peak VRAM (GB)':<20} | {'Throughput (img/s)':<20}")
     print("-" * 75)
 
-    last_failed_batch = None
-
     for batch in sorted_batches:
         cleanup_gpu()
         cmd = build_training_cmd(model_name, dataset, batch, workers=8, quick=quick)
         if not cmd:
             continue
 
-        num_images_tested = min(5 * batch, total_num_images) if quick else total_num_images
+        num_images_tested = min(10 * batch, total_num_images) if quick else total_num_images
 
-        print(f" -> Testing batch size {batch} (workers=8)...", flush=True)
         gpu_monitor.start()
         start_t = time.time()
         
@@ -298,7 +299,6 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
             vram_str = "N/A"
 
         if timed_out:
-            last_failed_batch = batch
             status_str = "FAILED (Timeout)"
             print(f" {batch:<12} | {status_str:<15} | {'STALLED':<20} | {'0.00':<20}")
             print(f"   [!] Subprocess timed out after {timeout_sec}s (stalled/deadlocked).")
@@ -315,41 +315,7 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
                 if total_vram == 0 or (peak_vram_gb / total_vram) <= 0.85:
                     safe_prod_batch = batch
                     safe_prod_vram = peak_vram_gb
-                
-                # Fast Midpoint Refinement: if headroom is ample (>15%) and we had a higher failure, test the midpoint!
-                if last_failed_batch and last_failed_batch > batch:
-                    free_vram = total_vram - peak_vram_gb
-                    mid_batch = (batch + last_failed_batch) // 2
-                    if free_vram > 1.8 and mid_batch > batch:
-                        print(f"   [*] Substantial headroom ({free_vram:.2f} GB free). Testing midpoint batch {mid_batch}...", flush=True)
-                        cleanup_gpu()
-                        mid_cmd = build_training_cmd(model_name, dataset, mid_batch, workers=8, quick=quick)
-                        gpu_monitor.start()
-                        m_start_t = time.time()
-                        try:
-                            m_res = subprocess.run(mid_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                                   text=True, encoding="utf-8", errors="replace", timeout=timeout_sec,
-                                                   cwd=str(PROJECT_ROOT), env=env)
-                            m_elapsed = time.time() - m_start_t
-                            m_vram = gpu_monitor.stop()
-                            m_peak = extract_peak_vram_from_output(m_res.stdout or "", fallback_monitor_gb=m_vram)
-                            if m_res.returncode == 0 and (total_vram == 0 or (m_peak / total_vram) <= 0.88):
-                                m_pct = (m_peak / total_vram) * 100.0 if total_vram > 0 else 0
-                                m_vram_str = f"{m_peak:.2f} GB ({m_pct:.1f}%)"
-                                m_fps = min(5 * mid_batch, total_num_images) / m_elapsed if m_elapsed > 0 else 0
-                                print(f" {mid_batch:<12} | {'PASSED':<15} | {m_vram_str:<20} | {m_fps:<20.2f}")
-                                print(f"   [OK] Midpoint Refinement: Successfully upgraded to larger batch {mid_batch}!")
-                                max_stable_batch = mid_batch
-                                safe_prod_batch = mid_batch
-                                safe_prod_vram = m_peak
-                                results.append({"batch": mid_batch, "status": "PASSED", "vram": m_vram_str, "vram_gb": m_peak, "fps": m_fps})
-                            else:
-                                print(f"   [-] Midpoint batch {mid_batch} exceeded headroom. Keeping stable batch {batch}.")
-                        except Exception:
-                            print(f"   [-] Midpoint batch {mid_batch} failed. Keeping stable batch {batch}.")
-                        cleanup_gpu()
-
-                print(f"   [OK] Top-Down Fast Exit: Found largest stable batch size ({max_stable_batch}). Stopping search early!")
+                print(f"   [OK] Top-Down Fast Exit: Found largest stable batch size ({batch}). Stopping search early!")
                 break
             else:
                 max_stable_batch = batch
@@ -359,7 +325,6 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
                 if fps > best_fps:
                     best_fps = fps
         else:
-            last_failed_batch = batch
             err_lines = [line.strip() for line in output.splitlines() if line.strip()]
             # Print last 5 meaningful lines so we always see the real error
             last_lines = err_lines[-5:] if len(err_lines) >= 5 else err_lines
@@ -400,8 +365,7 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
             if not cmd:
                 continue
 
-            num_images_tested = min(5 * max_stable_batch, total_num_images) if quick else total_num_images
-            print(f" -> Testing workers={w} (batch={max_stable_batch})...", flush=True)
+            num_images_tested = min(10 * max_stable_batch, total_num_images) if quick else total_num_images
             start_t = time.time()
             
             # Force UTF-8 so YOLO's unicode progress bar chars don't crash on Windows cp1252
@@ -423,10 +387,6 @@ def test_model_capacity(model_name, dataset, batch_list, workers_list, quick=Tru
                     if fps > best_fps:
                         best_fps = fps
                         optimal_workers = w
-                    elif best_fps > 0 and fps < best_fps * 0.90:
-                        # Worker saturation reached, skip higher worker counts to save time
-                        print(f"   [OK] Worker saturation reached ({w} workers is slower than {optimal_workers} workers). Stopping early!")
-                        break
                 else:
                     print(f" {w:<12} | {'FAILED':<15} | {'0.00':<20}")
             except subprocess.TimeoutExpired:

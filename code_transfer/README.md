@@ -1,4 +1,4 @@
-﻿# code_transfer/
+# code_transfer/
 
 Fast project sync to/from **Azure Blob Storage** (`opencvatstorage` / `opencvatcontainer`).
 
@@ -54,9 +54,9 @@ python code_transfer/upload.py --concurrency 16
 |---|---|
 | All Python scripts | `.git/`, `__pycache__/`, `*.pyc` |
 | `datasets/` folder | `venv/`, `.venv/`, `node_modules/` |
-| `rust_dataloader/` source | `target/` (Rust build artifacts), `*.pdb` |
+| Pipeline configurations | `target/` (build artifacts), `*.pdb` |
 | `code_transfer/` (these scripts) | `*.pt`, `*.pth`, `*.onnx` (model checkpoints) |
-| `docs/`, `tests/`, configs | `rustup-init.exe`, large zip backups |
+| `docs/`, `tests/`, configs | Large zip backups |
 
 Each run creates a **new timestamped subfolder** in the container:
 ```
@@ -110,13 +110,10 @@ code_transfer/
 ## 6. After downloading on VM — next steps
 
 ```bash
-# 1. Build the Rust native extension (requires Rust + maturin)
-python build_rust_dataloader.py
-
-# 2. Install Python dependencies
+# 1. Install Python dependencies
 pip install -r requirements.txt
 
-# 3. Launch the training orchestrator
+# 2. Launch the training orchestrator
 python orchestrator.py
 ```
 
