@@ -1261,9 +1261,16 @@ def main():
 
     elif choice == "13":
         print("\n[TASK] Cleanup Pipeline — Wipe stale outputs (interactive)")
-        log_path = os.path.join(logs_dir, "00_cleanup.log")
-        cmd = ["python", "scripts/data/cleanup_pipeline.py"]
-        run_cmd_and_log(cmd, log_path, "cleanup_pipeline")
+        # Import and run directly (NOT via subprocess) so interactive prompts
+        # are always visible in the terminal — subprocess piping swallows them.
+        import importlib.util, types
+        _spec = importlib.util.spec_from_file_location(
+            "cleanup_pipeline",
+            str(PROJECT_ROOT / "scripts" / "data" / "cleanup_pipeline.py")
+        )
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        _mod.main()
 
     elif choice == "14":
         print("Exiting.")

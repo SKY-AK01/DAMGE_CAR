@@ -145,7 +145,7 @@ def main():
         answer = input("Proceed with deletion? [y/N]: ").strip().lower()
         if answer not in ("y", "yes"):
             print("[CANCELLED] Nothing deleted.")
-            sys.exit(0)
+            return
 
     # ── Execute ───────────────────────────────────────────────────────────────
     print()
