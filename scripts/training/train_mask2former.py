@@ -84,12 +84,23 @@ class COCOMask2FormerDataset(Dataset):
         if len(instance_masks) == 0:
             instance_masks = [np.zeros((h, w), dtype=np.uint8)]
             class_labels = [0]
-            
+
+        # Build a single H×W instance map where pixel value = instance index (1-based).
+        # Background = 0.  Also build instance_id_to_semantic_id mapping.
+        # This matches the API expected by Mask2FormerImageProcessor in
+        # transformers >= 4.40 which no longer accepts a list of binary masks
+        # or 'class_labels' as direct processor kwargs.
+        instance_map = np.zeros((h, w), dtype=np.int32)
+        instance_id_to_semantic_id = {}
+        for inst_idx, (mask, cat_id) in enumerate(zip(instance_masks, class_labels), start=1):
+            instance_map[mask.astype(bool)] = inst_idx
+            instance_id_to_semantic_id[inst_idx] = int(cat_id)
+
         inputs = self.processor(
             images=image,
-            segmentation_maps=instance_masks,
-            class_labels=class_labels,
-            return_tensors="pt"
+            segmentation_maps=instance_map,
+            instance_id_to_semantic_id=instance_id_to_semantic_id,
+            return_tensors="pt",
         )
         # Squeeze batch dimension added by processor
         inputs = {k: v.squeeze(0) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
@@ -100,16 +111,18 @@ class COCOMask2FormerDataset(Dataset):
 def collate_fn(batch):
     pixel_values = torch.stack([b["pixel_values"] for b in batch])
     pixel_mask = torch.stack([b["pixel_mask"] for b in batch]) if "pixel_mask" in batch[0] else None
-    
-    mask_labels = [b["mask_labels"] for b in batch]
+
+    # mask_labels and class_labels are lists-of-tensors (variable length per image)
+    # — keep them as plain Python lists, not stacked tensors.
+    mask_labels  = [b["mask_labels"]  for b in batch]
     class_labels = [b["class_labels"] for b in batch]
-    image_ids = [b["image_id"] for b in batch]
-    
+    image_ids    = [b["image_id"]     for b in batch]
+
     res = {
         "pixel_values": pixel_values,
-        "mask_labels": mask_labels,
+        "mask_labels":  mask_labels,
         "class_labels": class_labels,
-        "image_ids": image_ids
+        "image_ids":    image_ids,
     }
     if pixel_mask is not None:
         res["pixel_mask"] = pixel_mask
@@ -179,7 +192,7 @@ def main():
     # AMP: mixed precision for faster training and lower VRAM usage
     # (mirrors train_maskrcnn.py which fixed NaN/overflow with float() casting)
     use_amp = device == "cuda"
-    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler  = torch.amp.GradScaler("cuda", enabled=use_amp)
     print(f"[OK] AMP (mixed precision): {'enabled' if use_amp else 'disabled (CPU)'}")
 
     run_name = f"mask2former_{ds_path.name if ds_path.is_dir() else args.dataset}"
@@ -201,7 +214,7 @@ def main():
             class_labels = [c.to(device) for c in batch["class_labels"]]
 
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 outputs = model(
                     pixel_values=pixel_values,
                     mask_labels=mask_labels,
