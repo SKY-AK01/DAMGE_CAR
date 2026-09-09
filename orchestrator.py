@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 orchestrator.py -- Interactive Pipeline Orchestrator in Python.
 
@@ -177,11 +177,13 @@ class Hyperparams:
             self.mrcnn_batch        = prompt_int("Batch size", mrcnn_default_b)
             self.mrcnn_workers      = prompt_int("Dataloader workers", mrcnn_default_w)
             self.mrcnn_val_interval = prompt_int("Validate every N epochs", 5)
+            self.mrcnn_accum_steps  = prompt_int("Gradient accumulation steps", 4)
         else:
             self.mrcnn_epochs       = 20
             self.mrcnn_batch        = get_default_batch("maskrcnn", 2)
             self.mrcnn_workers      = get_default_workers("maskrcnn", 4)
             self.mrcnn_val_interval = 5
+            self.mrcnn_accum_steps  = 4
 
         # ── Fast R-CNN — always silent default (not in model selection menu) ──
         fastrcnn_default_b = get_default_batch("fastrcnn", 2)
@@ -211,20 +213,25 @@ class Hyperparams:
             self.m2f_batch        = prompt_int("Batch size", m2f_default_b)
             self.m2f_workers      = prompt_int("Dataloader workers", m2f_default_w)
             self.m2f_val_interval = prompt_int("Validate every N epochs", 5)
+            self.m2f_accum_steps  = prompt_int("Gradient accumulation steps", 4)
+            _compile_ans          = prompt("  Use --compile (torch.compile, +21%% GPU throughput)? [y/N]: ")
+            self.m2f_compile      = _compile_ans.strip().lower() in ("y", "yes")
         else:
             self.m2f_epochs       = 20
             self.m2f_batch        = get_default_batch("mask2former", 2)
             self.m2f_workers      = get_default_workers("mask2former", 4)
             self.m2f_val_interval = 5
+            self.m2f_accum_steps  = 4
+            self.m2f_compile      = False
 
         # ── Summary: only show selected models ────────────────────────────────
         print("\n---- Summary ----")
         if need_yolo:
             print(f"  YOLOv11m-seg : epochs={self.yolo_epochs}  batch={self.yolo_batch}  workers={self.yolo_workers}  val_every={self.yolo_val_interval}")
         if need_maskrcnn:
-            print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}  val_every={self.mrcnn_val_interval}")
+            print(f"  Mask R-CNN   : epochs={self.mrcnn_epochs}  batch={self.mrcnn_batch}  workers={self.mrcnn_workers}  val_every={self.mrcnn_val_interval}  accum={self.mrcnn_accum_steps}")
         if need_m2f:
-            print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}  val_every={self.m2f_val_interval}")
+            print(f"  Mask2Former+ : epochs={self.m2f_epochs}  batch={self.m2f_batch}  workers={self.m2f_workers}  val_every={self.m2f_val_interval}  accum={self.m2f_accum_steps}  compile={self.m2f_compile}")
         print("-----------------")
 
 def run_cmd_and_log(cmd, log_path, label):
@@ -713,15 +720,18 @@ def save_run_config(logs_dir, task_name, dataset, models=None, hparams=None, ext
             "yolo":       {"epochs": getattr(hparams, "yolo_epochs",      None),
                            "batch":  getattr(hparams, "yolo_batch",       None),
                            "workers":getattr(hparams, "yolo_workers",     None)},
-            "maskrcnn":   {"epochs": getattr(hparams, "mrcnn_epochs",     None),
-                           "batch":  getattr(hparams, "mrcnn_batch",      None),
-                           "workers":getattr(hparams, "mrcnn_workers",    None)},
+            "maskrcnn":   {"epochs":      getattr(hparams, "mrcnn_epochs",      None),
+                           "batch":       getattr(hparams, "mrcnn_batch",       None),
+                           "workers":     getattr(hparams, "mrcnn_workers",     None),
+                           "accum_steps": getattr(hparams, "mrcnn_accum_steps", 4)},
             "fastrcnn":   {"epochs": getattr(hparams, "fastrcnn_epochs",  None),
                            "batch":  getattr(hparams, "fastrcnn_batch",   None),
                            "workers":getattr(hparams, "fastrcnn_workers", None)},
-            "mask2former":{"epochs": getattr(hparams, "m2f_epochs",       None),
-                           "batch":  getattr(hparams, "m2f_batch",        None),
-                           "workers":getattr(hparams, "m2f_workers",      None)},
+            "mask2former":{"epochs":      getattr(hparams, "m2f_epochs",        None),
+                           "batch":       getattr(hparams, "m2f_batch",         None),
+                           "workers":     getattr(hparams, "m2f_workers",       None),
+                           "accum_steps": getattr(hparams, "m2f_accum_steps",   4),
+                           "compile":     getattr(hparams, "m2f_compile",       False)},
         }
         # Remove model blocks that were never asked (all-None)
         hp_dict = {k: v for k, v in hp_dict.items()
@@ -955,7 +965,8 @@ def main():
             cmd = ["python", "scripts/training/train_maskrcnn.py", "--dataset", dataset,
                    "--epochs", str(hparams.mrcnn_epochs), "--batch", str(hparams.mrcnn_batch),
                    "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.mrcnn_val_interval)]
+                   "--val_interval", str(hparams.mrcnn_val_interval),
+                   "--accum_steps", str(hparams.mrcnn_accum_steps)]
             run_cmd_and_log(cmd, log_path, "train_maskrcnn")
 
         if models.fastrcnn:
@@ -973,7 +984,10 @@ def main():
             cmd = ["python", "scripts/training/train_mask2former.py", "--dataset", dataset,
                    "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
                    "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.m2f_val_interval)]
+                   "--val_interval", str(hparams.m2f_val_interval),
+                   "--accum_steps", str(hparams.m2f_accum_steps)]
+            if hparams.m2f_compile:
+                cmd.append("--compile")
             run_cmd_and_log(cmd, log_path, "train_mask2former")
 
         if models.sam2:
@@ -1041,7 +1055,8 @@ def main():
             cmd = ["python", "scripts/training/train_maskrcnn.py", "--dataset", dataset,
                    "--epochs", str(hparams.mrcnn_epochs), "--batch", str(hparams.mrcnn_batch),
                    "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.mrcnn_val_interval)]
+                   "--val_interval", str(hparams.mrcnn_val_interval),
+                   "--accum_steps", str(hparams.mrcnn_accum_steps)]
             run_cmd_and_log(cmd, log_path, "train_maskrcnn")
 
         if models.fastrcnn:
@@ -1059,7 +1074,10 @@ def main():
             cmd = ["python", "scripts/training/train_mask2former.py", "--dataset", dataset,
                    "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
                    "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.m2f_val_interval)]
+                   "--val_interval", str(hparams.m2f_val_interval),
+                   "--accum_steps", str(hparams.m2f_accum_steps)]
+            if hparams.m2f_compile:
+                cmd.append("--compile")
             run_cmd_and_log(cmd, log_path, "train_mask2former")
 
         if models.sam2:
