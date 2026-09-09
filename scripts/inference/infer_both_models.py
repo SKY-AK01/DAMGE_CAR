@@ -310,10 +310,68 @@ def run_maskrcnn(input_dir, output_dir, weights_path, class_names, conf):
 
 
 def _default_yolo_weights():
+    """Find the most recent YOLO weights file."""
+    # First, check if last_yolo_weights_path.txt exists and the path is valid
     if os.path.exists("last_yolo_weights_path.txt"):
         with open("last_yolo_weights_path.txt") as f:
-            return f.read().strip()
+            path = f.read().strip()
+            if os.path.exists(path):
+                return path
+            # Path in file doesn't exist, fall through to search
+    
+    # Search for the most recent YOLO weights in runs_comparison
+    runs_dir = Path("runs_comparison")
+    if runs_dir.exists():
+        # Find all best.pt files in yolo11m-seg or yolo11x-seg subdirectories
+        weight_files = list(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt"))
+        if not weight_files:
+            # Try alternate structure: run_*/yolo11*-seg/weights/best.pt
+            weight_files = list(runs_dir.glob("run_*/yolo11*-seg/weights/best.pt"))
+        if not weight_files:
+            # Try without run_ prefix
+            weight_files = list(runs_dir.glob("yolo11*-seg/*/weights/best.pt"))
+        
+        if weight_files:
+            # Sort by modification time, return most recent
+            weight_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(weight_files[0])
+    
+    # Final fallback
     return "runs_comparison/yolo11m-seg_carparts-seg/weights/best.pt"
+
+
+def _default_mask2former_weights():
+    """Find the most recent Mask2Former weights directory."""
+    runs_dir = Path("runs_comparison")
+    if runs_dir.exists():
+        # Look for best_model directories
+        model_dirs = list(runs_dir.glob("run_*/mask2former/best_model"))
+        if not model_dirs:
+            model_dirs = list(runs_dir.glob("mask2former/best_model"))
+        
+        if model_dirs:
+            # Sort by modification time, return most recent
+            model_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(model_dirs[0])
+    
+    return "runs_comparison/mask2former/best_model"
+
+
+def _default_maskrcnn_weights():
+    """Find the most recent Mask R-CNN weights file."""
+    runs_dir = Path("runs_comparison")
+    if runs_dir.exists():
+        # Look for best_model.pt files
+        weight_files = list(runs_dir.glob("run_*/maskrcnn/best_model.pt"))
+        if not weight_files:
+            weight_files = list(runs_dir.glob("maskrcnn/best_model.pt"))
+        
+        if weight_files:
+            # Sort by modification time, return most recent
+            weight_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(weight_files[0])
+    
+    return "runs_comparison/maskrcnn/best_model.pt"
 
 
 def main():
@@ -321,8 +379,8 @@ def main():
     parser.add_argument("--input", required=True, help="Folder of images to annotate")
     parser.add_argument("--output", default="./test_result", help="Base output folder")
     parser.add_argument("--yolo_weights", default=_default_yolo_weights())
-    parser.add_argument("--mask2former_weights", default="runs_comparison/mask2former/best_model")
-    parser.add_argument("--maskrcnn_weights", default="runs_comparison/maskrcnn/best_model.pt")
+    parser.add_argument("--mask2former_weights", default=_default_mask2former_weights())
+    parser.add_argument("--maskrcnn_weights", default=_default_maskrcnn_weights())
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--skip_yolo", action="store_true")
     parser.add_argument("--skip_mask2former", action="store_true")

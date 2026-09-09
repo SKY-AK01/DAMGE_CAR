@@ -1024,10 +1024,54 @@ def main():
         print("\n[TASK] Inference on Test Images")
         inp = prompt_default("Test images directory", "./test")
         out = prompt_default("Output directory", "./test_result")
+        
+        # Find most recent weights for each model
+        runs_dir = PROJECT_ROOT / "runs_comparison"
+        
+        # YOLO weights - search for most recent
+        yolo_weights = None
+        if runs_dir.exists():
+            yolo_files = list(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt"))
+            if not yolo_files:
+                yolo_files = list(runs_dir.glob("run_*/yolo11*-seg/weights/best.pt"))
+            if yolo_files:
+                yolo_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                yolo_weights = str(yolo_files[0])
+                print(f"[*] Found YOLO weights: {yolo_weights}")
+        
+        # Mask2Former weights - search for most recent
+        m2f_weights = None
+        if runs_dir.exists():
+            m2f_dirs = list(runs_dir.glob("run_*/mask2former/best_model"))
+            if m2f_dirs:
+                m2f_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                m2f_weights = str(m2f_dirs[0])
+                print(f"[*] Found Mask2Former weights: {m2f_weights}")
+        
+        # Mask R-CNN weights - search for most recent
+        mrcnn_weights = None
+        if runs_dir.exists():
+            mrcnn_files = list(runs_dir.glob("run_*/maskrcnn/best_model.pt"))
+            if mrcnn_files:
+                mrcnn_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                mrcnn_weights = str(mrcnn_files[0])
+                print(f"[*] Found Mask R-CNN weights: {mrcnn_weights}")
+        
         save_run_config(logs_dir, "Inference", dataset="N/A",
-                        extra={"input_dir": inp, "output_dir": out})
+                        extra={"input_dir": inp, "output_dir": out,
+                               "yolo_weights": yolo_weights, "mask2former_weights": m2f_weights,
+                               "maskrcnn_weights": mrcnn_weights})
         log_path = os.path.join(logs_dir, "01_inference.log")
         cmd = ["python", "scripts/inference/infer_both_models.py", "--input", inp, "--output", out]
+        
+        # Pass weights explicitly if found
+        if yolo_weights:
+            cmd.extend(["--yolo_weights", yolo_weights])
+        if m2f_weights:
+            cmd.extend(["--mask2former_weights", m2f_weights])
+        if mrcnn_weights:
+            cmd.extend(["--maskrcnn_weights", mrcnn_weights])
+        
         run_cmd_and_log(cmd, log_path, "inference")
 
     elif choice == "4":
