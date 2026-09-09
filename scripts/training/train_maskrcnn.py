@@ -124,13 +124,15 @@ def main():
                              "batch of 8 without holding 8 images in VRAM simultaneously.")
     parser.add_argument("--compile", action="store_true", default=False,
                         help="Wrap the model with torch.compile(backend='inductor') before "
-                             "training.  capture_scalar_outputs=True is set automatically so "
-                             "that scalar-returning ops don't produce graph breaks.  "
-                             "NOTE: capture_dynamic_output_shape_ops is intentionally NOT set "
-                             "because Mask R-CNN uses dynamic shape ops (NMS, RoI Align) that "
-                             "are not yet fully supported by inductor and would cause errors. "
-                             "Expected 10-25%% throughput gain on GPU; skip on CPU.  "
-                             "Disable if you hit compile errors on a new torch/torchvision version.")
+                             "training.  "
+                             "WARNING: Benchmarked on NVIDIA A10-12Q (torch 2.5.1+cu124): "
+                             "compiled=1.87 img/s vs eager=5.54 img/s (-66%%).  "
+                             "Mask R-CNN has 19 graph breaks (NMS and RoI Align produce "
+                             "variable-length outputs; torch_choice uses a data-dependent "
+                             "index).  roi_align recompiles on every unique box count, "
+                             "exhausting dynamo's cache_size_limit and running slower than "
+                             "eager.  Only enable if you have a specific reason to believe "
+                             "your torch/torchvision version handles these ops differently.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -176,33 +178,36 @@ def main():
     model = build_model(num_classes).to(device)
 
     # ── torch.compile (optional, GPU-only) ───────────────────────────────────
-    # capture_scalar_outputs=True is set so that scalar-returning ops (e.g.
-    # Tensor.item() in RoI Align / loss computation) are captured inside the
-    # compiled graph rather than causing graph breaks.
-    # capture_dynamic_output_shape_ops is intentionally NOT set: Mask R-CNN
-    # uses dynamic output shape ops (NMS returns a variable number of boxes)
-    # that inductor does not yet support, and enabling that flag would cause
-    # compilation errors rather than graph breaks.
+    # BENCHMARK RESULT (NVIDIA A10-12Q, torch 2.5.1+cu124, carparts-seg val):
+    #   Eager:    5.54 img/s
+    #   Compiled: 1.87 img/s  (-66%)
     #
-    # suppress_errors=True — GeneralizedRCNN.transform uses torch_choice() to
-    # pick a random resize value, which produces a data-dependent integer index
-    # (TruncToInt(zuf0)).  Dynamo cannot specialize a list index whose value is
-    # not known at trace time and raises GuardOnDataDependentSymNode.  This is
-    # fundamentally untraceable — suppress_errors lets dynamo fall back to eager
-    # for that subgraph (the transform/resize) while still compiling the FPN
-    # backbone and RoI heads, which gives most of the speedup.
+    # Mask R-CNN is NOT a good candidate for torch.compile with current inductor.
+    # Root cause: 19 graph breaks, dominated by:
+    #   - aten.nonzero (NMS input filtering) — dynamic output shape
+    #   - torchvision.nms — dynamic output shape
+    #   - roi_align / _infer_scale (Tensor.item() in scale computation)
+    #   - torch_choice (data-dependent list index, fundamentally untraceable)
     #
-    # cache_size_limit=64 — the val loop switches grad_mode (train→eval), which
-    # looks like a new graph signature.  Default limit of 8 fills up across
-    # train/val transitions; 64 gives headroom for all variants.
+    # The roi_align function recompiles on every unique box count (NMS output
+    # is variable per image), exhausting cache_size_limit and spending time on
+    # compilation overhead without getting stable compiled execution.
+    #
+    # capture_dynamic_output_shape_ops is intentionally NOT set: inductor does
+    # not support dynamic-output-shape ops (NMS, nonzero) and enabling it would
+    # cause compilation errors, not graph breaks.
+    #
+    # This block is kept so the flag is accepted without error, but --compile
+    # should not be used for Mask R-CNN until torchvision adds native compile
+    # support for its detection ops (tracked upstream).
     if args.compile and device == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
         torch._dynamo.config.suppress_errors = True
         torch._dynamo.config.cache_size_limit = 64
         model = torch.compile(model, backend="inductor")
-        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True, suppress_errors=True, cache_size_limit=64)")
-        print("     Note: GeneralizedRCNN.transform random-resize is untraceable by dynamo;")
-        print("     suppress_errors=True means that subgraph runs in eager, rest compiles.")
+        print("[WARNING] torch.compile enabled for Mask R-CNN — measured -66% throughput vs eager.")
+        print("          19 graph breaks (NMS, RoI Align, torch_choice) prevent effective compilation.")
+        print("          Use eager mode (omit --compile) for Mask R-CNN training.")
     elif args.compile:
         print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
