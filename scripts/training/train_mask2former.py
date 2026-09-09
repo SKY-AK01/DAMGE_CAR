@@ -272,8 +272,15 @@ def main():
     if args.compile and device == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
         torch._dynamo.config.suppress_errors = True
+        # cache_size_limit: dynamo caches one compiled graph per unique input
+        # signature.  The val loop switches grad_mode (train→eval), which looks
+        # like a new signature.  Default limit of 8 fills up across train/val
+        # transitions and dynamo falls back to eager permanently for that frame.
+        # 64 gives enough headroom for all grad_mode / AMP / batch-size variants
+        # without unbounded memory growth.
+        torch._dynamo.config.cache_size_limit = 64
         model = torch.compile(model, backend="inductor")
-        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True, suppress_errors=True)")
+        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True, suppress_errors=True, cache_size_limit=64)")
         print("     Note: suppress_errors=True means dynamo falls back to eager for any")
         print("     subgraph that cannot be compiled (criterion/loss runs in eager mode).")
         print("     To resolve permanently: pip install --upgrade onnxruntime-gpu")
