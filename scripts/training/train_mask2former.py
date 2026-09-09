@@ -240,14 +240,44 @@ def main():
     model.to(device)
 
     # ── torch.compile (optional, GPU-only) ───────────────────────────────────
-    # capture_scalar_outputs=True MUST be set before compilation so that
-    # Tensor.item() calls in multi_scale_deformable_attention are captured
-    # inside the graph rather than causing graph breaks.  The Stage 5 benchmark
-    # confirmed 9 graph breaks in the default config, all resolved by this flag.
+    # Two issues resolved here beyond the basic compile call:
+    #
+    # 1. capture_scalar_outputs=True  — resolves 9 graph breaks in
+    #    multi_scale_deformable_attention caused by Tensor.item() calls
+    #    (confirmed by Stage 5 benchmark).
+    #
+    # 2. scipy.optimize.linear_sum_assignment  — Mask2Former's Hungarian
+    #    matcher calls this C extension for bipartite matching in the loss.
+    #    Dynamo cannot trace through compiled C extensions and breaks the graph
+    #    at every call.  torch.compiler.allow_in_graph() tells dynamo to treat
+    #    it as an opaque leaf function instead (supported escape hatch).
+    #
+    # 3. onnxruntime / NumPy 2 SystemError  — on VMs where onnxruntime was
+    #    built against NumPy 1.x but NumPy 2.x is installed, dynamo's lazy
+    #    backend registration crashes with SystemError when it tries to import
+    #    onnxruntime.  We catch that at compile time and fall back to eager so
+    #    training continues uninterrupted.  Fix the environment with:
+    #    pip install --upgrade onnxruntime  (rebuilds against current NumPy)
     if args.compile and device == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
-        model = torch.compile(model, backend="inductor")
-        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
+
+        # Register scipy's Hungarian matcher as an opaque leaf so dynamo
+        # doesn't break the graph at every loss computation.
+        try:
+            import scipy.optimize
+            torch.compiler.allow_in_graph(scipy.optimize.linear_sum_assignment)
+            print("[OK] scipy.optimize.linear_sum_assignment registered as allow_in_graph")
+        except Exception as _e:
+            print(f"[WARN] Could not register scipy.optimize.linear_sum_assignment: {_e}")
+
+        try:
+            model = torch.compile(model, backend="inductor")
+            print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
+        except SystemError as _e:
+            # onnxruntime built against NumPy 1.x crashes dynamo backend
+            # registration on NumPy 2.x environments.  Fall back to eager.
+            print(f"[WARNING] torch.compile failed (likely onnxruntime/NumPy mismatch): {_e}")
+            print("[WARNING] Falling back to eager mode. Fix with: pip install --upgrade onnxruntime")
     elif args.compile:
         print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
