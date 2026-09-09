@@ -337,7 +337,13 @@ def run_maskrcnn(ds_path, do_throughput, warmup, timed, limit):
 
     local_w = PROJECT_ROOT / "runs_comparison" / "maskrcnn" / "best_model.pt"
     if local_w.exists():
-        model.load_state_dict(torch.load(local_w, map_location=DEVICE))
+        sd = torch.load(local_w, map_location=DEVICE, weights_only=True)
+        # torch.compile wraps state dict keys with "_orig_mod." prefix.
+        # Strip it so the checkpoint loads correctly whether it was saved
+        # from a compiled or uncompiled model.
+        if any(k.startswith("_orig_mod.") for k in sd):
+            sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
+        model.load_state_dict(sd)
         print(f"  Weights : {local_w}")
     else:
         print("  Weights : ImageNet pretrained backbone (no local best_model.pt found)")
