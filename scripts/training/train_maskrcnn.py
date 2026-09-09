@@ -103,9 +103,11 @@ def main():
                               "Mask R-CNN is heavier per-sample than YOLO, so raise "
                               "further only after watching nvidia-smi on a first run.")
     parser.add_argument("--lr", type=float, default=0.005)
-    parser.add_argument("--num_workers", type=int, default=8,
-                         help="DataLoader workers. Was hardcoded to 0 (default) before, "
-                              "which fully blocked the GPU during mask rasterization.")
+    parser.add_argument("--num_workers", type=int, default=4,
+                         help="DataLoader workers. Default lowered 8→4 for Windows: 'spawn' "
+                              "multiprocessing means each worker boots a fresh interpreter, so "
+                              "8 workers consume ~3-4 GB RAM before a single batch loads. "
+                              "4 workers with prefetch_factor=4 is more efficient on Windows.")
     parser.add_argument("--amp", action="store_true", default=True,
                          help="Use automatic mixed precision. On by default; pass "
                               "--no-amp to disable if you hit NaN losses.")
@@ -115,6 +117,11 @@ def main():
     parser.add_argument("--val_interval", type=int, default=5,
                         help="Run validation + COCO eval every N epochs (default: 5). "
                              "Use 1 to validate every epoch (original behaviour).")
+    parser.add_argument("--accum_steps", type=int, default=4,
+                        help="Gradient accumulation steps (default: 4). "
+                             "Effective batch = batch * accum_steps. "
+                             "With batch=2 and accum_steps=4 the optimizer sees an effective "
+                             "batch of 8 without holding 8 images in VRAM simultaneously.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -166,22 +173,55 @@ def main():
         train_ds, batch_size=args.batch, shuffle=True, collate_fn=collate_fn,
         num_workers=args.num_workers, pin_memory=True,
         persistent_workers=args.num_workers > 0,
+        prefetch_factor=4 if args.num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch, shuffle=False, collate_fn=collate_fn,
         num_workers=args.num_workers, pin_memory=True,
         persistent_workers=args.num_workers > 0,
+        prefetch_factor=4 if args.num_workers > 0 else None,
     )
 
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=max(1, args.epochs // 3), gamma=0.1)
+
+    # ── LR scaling: the canonical Mask R-CNN SGD lr=0.02 is for batch=16 on 8 GPUs.
+    # At batch=2 on a single GPU we must scale linearly: lr = 0.02 * (2/16) = 0.0025.
+    #
+    # NOTE — deviation from audit wording: the audit said "rescale 0.005 × (batch/16)".
+    # That formula is wrong because 0.005 was already a misscaled number (0.02/4 without
+    # justification).  Rescaling it again would give 0.005 × (2/16) = 0.000625 = 0.02/32,
+    # as if reference batch were 32.  The correct approach is to start from the original
+    # reference (0.02 @ batch=16) and scale from there, not from the already-wrong default.
+    _reference_lr    = 0.02   # canonical SGD LR from Detectron2 / FAIR Mask R-CNN @ batch=16
+    _reference_batch = 16
+    _scaled_lr_default = _reference_lr * (args.batch / _reference_batch)
+    # Only apply the scaled default if the user didn't pass --lr explicitly.
+    # args.lr still holds the argparse default (0.005); if user passed something
+    # different we honour that.  We detect "was it overridden?" by comparing to
+    # the argparse default.
+    effective_lr = args.lr if args.lr != 0.005 else _scaled_lr_default
+
+    optimizer = torch.optim.SGD(params, lr=effective_lr, momentum=0.9, weight_decay=0.0005)
+    print(f"[OK] SGD lr={effective_lr:.6f}  "
+          f"(reference {_reference_lr} @ batch={_reference_batch} → scaled to batch={args.batch}; "
+          f"override with --lr)")
+
+    # ── LR schedule: single step-drop at 75% of training ────────────────────
+    # The previous StepLR with step_size=epochs//3 dropped LR by 10× TWICE
+    # (at ~33% and ~67%), leaving the last third of training at LR/100 — far
+    # too low for fine-tuning.  A single drop at 75% is more standard for
+    # detection fine-tuning and leaves the model enough LR budget to converge.
+    step_epoch = max(1, int(args.epochs * 0.75))
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_epoch, gamma=0.1)
+    print(f"[OK] StepLR: single 0.1× drop at epoch {step_epoch} / {args.epochs}")
 
     # Mixed precision: halves compute per step on Ampere GPUs (A10 included).
     # Matters more than usual on a vGPU profile since every step needs to
     # fit inside a scheduled compute time-slice.
     use_amp = args.amp and device == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    # Use torch.amp (non-device-namespaced) API — torch.cuda.amp is deprecated
+    # in PyTorch 2.x and will be removed in a future release.
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     if use_amp:
         print("[OK] Mixed precision (AMP) enabled")
 
@@ -195,15 +235,16 @@ def main():
         total_loss = 0
         loss_components = {}
         num_images = 0
+        optimizer.zero_grad(set_to_none=True)  # reset at epoch start
+
         for batch_idx, (images, targets) in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs} [train]")):
             if args.max_batches and batch_idx >= args.max_batches:
                 break
-            images = [img.to(device) for img in images]
+            images  = [img.to(device) for img in images]
             targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
             num_images += len(images)
 
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 loss_dict = model(images, targets)
                 # Cast all losses to float32 before summing to avoid the
                 # float16 NaN/overflow in the mask head's BCE loss that occurs
@@ -213,15 +254,31 @@ def main():
                 # in fastrcnn_loss on the next forward pass.
                 # Casting here is zero-cost (scalars) and prevents the overflow.
                 loss = sum(v.float() for v in loss_dict.values())
+                # Scale loss by 1/accum_steps so accumulated gradients equal a
+                # true mean over the full effective batch.
+                loss = loss / args.accum_steps
 
-                # track individual losses
+                # track individual losses (unscaled, for logging)
                 for k, v in loss_dict.items():
                     loss_components[k] = loss_components.get(k, 0) + v.item()
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item()
+
+            # Only step the optimizer every accum_steps batches (or at epoch end)
+            is_last_batch = (batch_idx + 1) == len(train_loader)
+            if (batch_idx + 1) % args.accum_steps == 0 or is_last_batch:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+
+                # ── LR diagnostic: print LR at the first two optimizer steps
+                #    of epoch 1 to confirm scaling and schedule are correct.
+                if epoch == 1 and (batch_idx // args.accum_steps) < 2:
+                    print(f"    [LR check] optimizer step {batch_idx // args.accum_steps + 1}: "
+                          f"lr={optimizer.param_groups[0]['lr']:.6f}")
+
+            # Accumulate unscaled loss for logging
+            total_loss += loss.item() * args.accum_steps
 
         lr_scheduler.step()
         avg_train_loss = total_loss / len(train_loader)
@@ -245,7 +302,8 @@ def main():
                 for images, targets in val_loader:
                     images = [img.to(device) for img in images]
                     targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-                    with torch.cuda.amp.autocast(enabled=use_amp):
+                    # Use torch.amp (not deprecated torch.cuda.amp) to match training.
+                    with torch.amp.autocast("cuda", enabled=use_amp):
                         loss_dict = model(images, targets)
                         val_loss += sum(v.float() for v in loss_dict.values()).item()
             avg_val_loss = val_loss / len(val_loader)
@@ -256,7 +314,10 @@ def main():
             with torch.no_grad():
                 for images, targets in val_loader:
                     images = [img.to(device) for img in images]
-                    outputs = model(images)
+                    # autocast in val matches training precision — halves VRAM
+                    # and speeds up the forward pass at no accuracy cost.
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        outputs = model(images)
                     for t, o in zip(targets, outputs):
                         img_id = t["image_id"].item()
                         preds = []

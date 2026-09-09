@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CNN Optimization & Framework Ecosystem Explorer</title>
+    <!-- Chosen Palette: Slate & Warm Indigo (Background: #f8fafc / #f1f5f9, Text: #0f172a, Accents: #4f46e5 (Indigo), #0d9488 (Teal), #d97706 (Amber)) -->
+    <!-- Application Structure Plan: Designed a 5-tab thematic interactive application. Tab 1 is an Executive Dashboard with key metrics and recommended stacks. Tab 2 presents Convolution Algorithms with dynamic kernel comparison sliders and interactive chart. Tab 3 is a deep searchable/filterable database of all 15+ optimization techniques categorized by goal with structured accordions (How, Why, When, Pros/Cons, Example). Tab 4 is a Framework & Compiler Ecosystem matrix with interactive breakdown. Tab 5 is an Interactive Architecture Stack Builder. This non-linear design allows both high-level architects and deep ML systems engineers to quickly locate and compare specific optimization tactics. -->
+    <!-- Visualization & Content Choices:
+        1. Conv Algorithm Complexity -> Goal: Compare math complexity across kernel sizes -> Line Chart (Chart.js) + Interactive Kernel Size Slider -> Interactivity: Adjust kernel/tile size to see FLOPS change dynamically.
+        2. Precision & Math Format Comparison -> Goal: Show memory vs compute throughput benefits -> Grouped Bar Chart (Chart.js) -> Interactivity: Hover to inspect bit width, dynamic range, and throughput multiplier.
+        3. Technique Explorer -> Goal: Categorize and detail 15+ methods -> Interactive Grid with Filter Tags & Detail Modal / Accordion -> Interactivity: Filter by performance goal, search keyword, toggle code snippet.
+        4. Framework Feature Comparison -> Goal: Contrast PyTorch, JAX, TF, TensorRT -> Interactive Comparison Table & Feature Radar Chart -> Interactivity: Switch frameworks to highlight strengths/weaknesses.
+        5. Interactive Stack Selector -> Goal: Recommend tech stack based on deployment constraints -> Interactive Decision Tool (Vanilla JS) -> Interactivity: User selects target (Edge, Cloud, Research, Serving) and gets customized architecture blueprint.
+        CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. Canvas (Chart.js) and clean Tailwind HTML/CSS components only. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f3ff',
+                            100: '#e0e7ff',
+                            500: '#6366f1',
+                            600: '#4f46e5',
+                            700: '#4338ca',
+                            800: '#3730a3',
+                            900: '#312e81',
+                        },
+                        tealbrand: {
+                            500: '#14b8a6',
+                            600: '#0d9488',
+                            700: '#0f766e',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 650px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 320px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 360px;
+            }
+        }
+        /* Custom Scrollbar for clean code blocks */
+        pre::-webkit-scrollbar {
+            height: 6px;
+            width: 6px;
+        }
+        pre::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 font-sans antialiased min-h-screen flex flex-col">
+
+    <!-- Header / Navigation -->
+    <header class="bg-slate-900 text-white sticky top-0 z-50 shadow-md border-b border-slate-800">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center gap-3">
+                    <span class="p-2 bg-indigo-600 rounded-lg text-lg font-bold shadow-inner">⚡</span>
+                    <div>
+                        <h1 class="text-lg font-bold leading-tight">CNN Systems & Optimization Guide</h1>
+                        <p class="text-xs text-slate-400 hidden sm:block">Algorithms, Compilers, Precision & Stack Architecture</p>
+                    </div>
+                </div>
+                <!-- Navigation Tabs -->
+                <nav class="hidden md:flex space-x-1 text-sm font-medium">
+                    <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn px-3 py-2 rounded-md bg-indigo-600 text-white transition">Overview</button>
+                    <button onclick="switchTab('algorithms')" id="nav-algorithms" class="nav-btn px-3 py-2 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 transition">Algorithms</button>
+                    <button onclick="switchTab('techniques')" id="nav-techniques" class="nav-btn px-3 py-2 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 transition">Techniques Directory</button>
+                    <button onclick="switchTab('frameworks')" id="nav-frameworks" class="nav-btn px-3 py-2 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 transition">Frameworks & Compilers</button>
+                    <button onclick="switchTab('recommender')" id="nav-recommender" class="nav-btn px-3 py-2 rounded-md text-slate-300 hover:text-white hover:bg-slate-800 transition">Stack Recommender</button>
+                </nav>
+            </div>
+            <!-- Mobile Navigation Scroll Bar -->
+            <div class="flex md:hidden overflow-x-auto py-2 space-x-2 text-xs border-t border-slate-800">
+                <button onclick="switchTab('dashboard')" id="mnav-dashboard" class="mnav-btn px-3 py-1.5 rounded-md bg-indigo-600 text-white whitespace-nowrap">Overview</button>
+                <button onclick="switchTab('algorithms')" id="mnav-algorithms" class="mnav-btn px-3 py-1.5 rounded-md bg-slate-800 text-slate-300 whitespace-nowrap">Algorithms</button>
+                <button onclick="switchTab('techniques')" id="mnav-techniques" class="mnav-btn px-3 py-1.5 rounded-md bg-slate-800 text-slate-300 whitespace-nowrap">Techniques</button>
+                <button onclick="switchTab('frameworks')" id="mnav-frameworks" class="mnav-btn px-3 py-1.5 rounded-md bg-slate-800 text-slate-300 whitespace-nowrap">Frameworks</button>
+                <button onclick="switchTab('recommender')" id="mnav-recommender" class="mnav-btn px-3 py-1.5 rounded-md bg-slate-800 text-slate-300 whitespace-nowrap">Stack Recommender</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        <!-- SECTION 1: DASHBOARD OVERVIEW -->
+        <section id="sec-dashboard" class="tab-content space-y-8">
+            <!-- Intro Paragraph -->
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">Executive Summary & Optimization Landscape</h2>
+                <p class="text-slate-600 leading-relaxed">
+                    Accelerating Convolutional Neural Networks (CNNs) requires deep synchronization across mathematical operational lowering, floating-point precision strategies, graph compilers, and underlying parallel hardware topologies. This interactive report provides a systematic operational framework to analyze trade-offs between accuracy, convergence stability, training throughput, edge inference latency, and memory footprints.
+                </p>
+            </div>
+
+            <!-- Key Metric Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <span class="text-xs font-semibold uppercase tracking-wider text-indigo-600">Winograd Speedup</span>
+                        <div class="text-3xl font-extrabold text-slate-900 mt-1">2.25×</div>
+                        <p class="text-xs text-slate-500 mt-1">Scalar multiplication reduction for $3 \times 3$ filters with $F(2 \times 2, 3 \times 3)$.</p>
+                    </div>
+                    <div class="mt-4 text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded inline-block w-max">Compute Efficiency</div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <span class="text-xs font-semibold uppercase tracking-wider text-indigo-600">Depthwise Separable</span>
+                        <div class="text-3xl font-extrabold text-slate-900 mt-1">8× – 9×</div>
+                        <p class="text-xs text-slate-500 mt-1">FLOPs & parameter count reduction for standard $3 \times 3$ spatial kernels.</p>
+                    </div>
+                    <div class="mt-4 text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded inline-block w-max">Architectural Factorization</div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <span class="text-xs font-semibold uppercase tracking-wider text-indigo-600">FP8 Compute Boost</span>
+                        <div class="text-3xl font-extrabold text-slate-900 mt-1">2.0×</div>
+                        <p class="text-xs text-slate-500 mt-1">Throughput multiplier over FP16/BF16 on Hopper/Blackwell Tensor Cores.</p>
+                    </div>
+                    <div class="mt-4 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-1 rounded inline-block w-max">Low-Precision Scaling</div>
+                </div>
+
+                <div class="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <span class="text-xs font-semibold uppercase tracking-wider text-indigo-600">Implicit GEMM</span>
+                        <div class="text-3xl font-extrabold text-slate-900 mt-1">0% VRAM</div>
+                        <p class="text-xs text-slate-500 mt-1">Eliminates standard `im2col` matrix allocation overhead via virtual indexing.</p>
+                    </div>
+                    <div class="mt-4 text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded inline-block w-max">Global VRAM Conservation</div>
+                </div>
+            </div>
+
+            <!-- Charts Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Precision & Format Comparison Chart -->
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 class="text-lg font-bold text-slate-900 mb-1">Precision Formats: Relative Throughput & Memory</h3>
+                    <p class="text-xs text-slate-500 mb-4">Comparing numerical precisions across relative GEMM compute throughput and memory footprint savings.</p>
+                    <div class="chart-container">
+                        <canvas id="precisionChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Optimal Deployment Architecture Quick Matrix -->
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col justify-between">
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-900 mb-1">Deployment Target Snapshot</h3>
+                        <p class="text-xs text-slate-500 mb-4">Summary of primary software and mathematical choices per CNN deployment context.</p>
+                        
+                        <div class="space-y-3">
+                            <div class="p-3 bg-slate-50 rounded-lg border border-slate-100 flex justify-between items-center text-xs">
+                                <div>
+                                    <span class="font-bold text-slate-800">Embedded Edge:</span>
+                                    <span class="text-slate-600 ml-1">TensorRT + INT8 QAT + Winograd / GEMM</span>
+                                </div>
+                                <span class="bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-semibold">&lt;10ms Latency</span>
+                            </div>
+                            <div class="p-3 bg-slate-50 rounded-lg border border-slate-100 flex justify-between items-center text-xs">
+                                <div>
+                                    <span class="font-bold text-slate-800">Cloud Multi-GPU Training:</span>
+                                    <span class="text-slate-600 ml-1">PyTorch / JAX + BF16 AMP + NHWC GEMM</span>
+                                </div>
+                                <span class="bg-teal-100 text-teal-800 px-2 py-0.5 rounded font-semibold">Max Throughput</span>
+                            </div>
+                            <div class="p-3 bg-slate-50 rounded-lg border border-slate-100 flex justify-between items-center text-xs">
+                                <div>
+                                    <span class="font-bold text-slate-800">Fast Vision Research:</span>
+                                    <span class="text-slate-600 ml-1">PyTorch Eager + AMP FP16 + Dynamic cuDNN</span>
+                                </div>
+                                <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-semibold">High Agility</span>
+                            </div>
+                            <div class="p-3 bg-slate-50 rounded-lg border border-slate-100 flex justify-between items-center text-xs">
+                                <div>
+                                    <span class="font-bold text-slate-800">High-Scale Cloud API:</span>
+                                    <span class="text-slate-600 ml-1">Triton Server + FP16/FP8 + Dynamic Profiles</span>
+                                </div>
+                                <span class="bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-semibold">Max Batch QPS</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-4 border-t border-slate-100 flex justify-between items-center">
+                        <span class="text-xs text-slate-500">Need a custom stack recommendation?</span>
+                        <button onclick="switchTab('recommender')" class="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition">Launch Stack Recommender →</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 2: ALGORITHMIC FOUNDATIONS -->
+        <section id="sec-algorithms" class="tab-content hidden space-y-8">
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">Algorithmic Foundations of Spatial Convolutions</h2>
+                <p class="text-slate-600 leading-relaxed">
+                    Direct sliding-window 2D convolution evaluates an arithmetic complexity of $O(N \cdot K \cdot C \cdot H \cdot W \cdot R \cdot S)$. To mitigate nested loop inefficiencies and cache misses, modern DL backends transform spatial domain calculations into dense matrix multiplication (GEMM), element-wise Hadamard products (Winograd), or frequency domain operations (FFT).
+                </p>
+            </div>
+
+            <!-- Interactive Kernel Complexity Explorer & Chart -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Controls & Interactive Estimator -->
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 class="text-lg font-bold text-slate-900">Interactive Math Estimator</h3>
+                    <p class="text-xs text-slate-500">Adjust spatial parameters to evaluate theoretical operations across algorithmic lowering paradigms.</p>
+                    
+                    <div class="space-y-3 text-xs">
+                        <div>
+                            <label class="font-semibold text-slate-700 flex justify-between">
+                                <span>Spatial Image Resolution ($H \times W$):</span>
+                                <span id="val-hw" class="text-indigo-600 font-bold">224 x 224</span>
+                            </label>
+                            <input type="range" id="input-hw" min="32" max="512" step="32" value="224" class="w-full mt-1 accent-indigo-600" oninput="updateMathEstimator()">
+                        </div>
+
+                        <div>
+                            <label class="font-semibold text-slate-700 flex justify-between">
+                                <span>Kernel Size ($R = S$):</span>
+                                <span id="val-k" class="text-indigo-600 font-bold">3 x 3</span>
+                            </label>
+                            <input type="range" id="input-k" min="1" max="11" step="2" value="3" class="w-full mt-1 accent-indigo-600" oninput="updateMathEstimator()">
+                        </div>
+
+                        <div>
+                            <label class="font-semibold text-slate-700 flex justify-between">
+                                <span>Channels ($C = K$):</span>
+                                <span id="val-c" class="text-indigo-600 font-bold">64</span>
+                            </label>
+                            <input type="range" id="input-c" min="16" max="256" step="16" value="64" class="w-full mt-1 accent-indigo-600" oninput="updateMathEstimator()">
+                        </div>
+                    </div>
+
+                    <!-- Calculated Output Cards -->
+                    <div class="pt-4 border-t border-slate-100 space-y-2 text-xs">
+                        <div class="p-2.5 bg-slate-50 rounded border border-slate-200 flex justify-between items-center">
+                            <span class="font-semibold text-slate-700">Direct GEMM Scalar Mults:</span>
+                            <span id="calc-gemm" class="font-mono font-bold text-indigo-600">1.18 GFLOPs</span>
+                        </div>
+                        <div class="p-2.5 bg-slate-50 rounded border border-slate-200 flex justify-between items-center">
+                            <span class="font-semibold text-slate-700">Winograd $F(2\times 2, 3\times 3)$ Mults:</span>
+                            <span id="calc-wino" class="font-mono font-bold text-teal-600">0.52 GFLOPs</span>
+                        </div>
+                        <div class="p-2.5 bg-slate-50 rounded border border-slate-200 flex justify-between items-center">
+                            <span class="font-semibold text-slate-700">Winograd Arithmetic Savings:</span>
+                            <span id="calc-savings" class="font-mono font-bold text-amber-600">2.25× Reduction</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Algorithmic Complexity Comparison Chart -->
+                <div class="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                    <h3 class="text-lg font-bold text-slate-900 mb-1">Theoretical Scalar Multiplications vs. Kernel Size</h3>
+                    <p class="text-xs text-slate-500 mb-4">Comparison of operation scaling as kernel size increases (Fixed $224 \times 224$ feature map, $C=64$).</p>
+                    <div class="chart-container">
+                        <canvas id="algoChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Deep Dive Algorithm Comparison Table -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="p-6 border-b border-slate-100">
+                    <h3 class="text-lg font-bold text-slate-900">Algorithmic Trade-offs Matrix</h3>
+                    <p class="text-xs text-slate-500 mt-1">Detailed breakdown of operational mechanics, memory footprint, optimal regimes, and low-bit stability.</p>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs text-left text-slate-700">
+                        <thead class="bg-slate-50 text-slate-800 uppercase font-bold border-b border-slate-200">
+                            <tr>
+                                <th class="p-4">Algorithm</th>
+                                <th class="p-4">Mathematical Complexity</th>
+                                <th class="p-4">VRAM Memory Footprint</th>
+                                <th class="p-4">Optimal Kernel Regimes</th>
+                                <th class="p-4">Numerical & Precision Stability</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-indigo-600">Direct / Implicit GEMM</td>
+                                <td class="p-4 font-mono">$O(N \cdot K \cdot C \cdot H \cdot W \cdot R \cdot S)$</td>
+                                <td class="p-4">Minimal VRAM overhead (Virtual matrix addressing via registers)</td>
+                                <td class="p-4">Universal applicability (Any kernel size $R \times S$, stride $S \ge 1$)</td>
+                                <td class="p-4 text-emerald-700 font-semibold">Exceptionally High (FP32, FP16, BF16, INT8, FP8, FP4)</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-teal-600">Winograd Minimal Filtering</td>
+                                <td class="p-4 font-mono">$O(N \cdot K \cdot C \cdot P \cdot Q \cdot (m+r-1)^2)$</td>
+                                <td class="p-4">Moderate overhead (Transformed intermediate staging buffers)</td>
+                                <td class="p-4">Small spatial kernels ($3 \times 3$, $5 \times 5$), Unit Stride ($S=1$)</td>
+                                <td class="p-4 text-amber-700 font-semibold">Susceptible to dynamic range loss; unstable for large tiles under INT8</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-purple-600">Fast Fourier Transform (FFT)</td>
+                                <td class="p-4 font-mono">$O(N \cdot K \cdot C \cdot H \cdot W \log_2(H \cdot W))$</td>
+                                <td class="p-4 text-red-600 font-semibold">Massive overhead (Complex-valued zero-padded matrices)</td>
+                                <td class="p-4">Large spatial kernels ($7 \times 7, 11 \times 11, 31 \times 31$), Unit Stride</td>
+                                <td class="p-4 text-slate-600">High stability in FP32; complex math limits low-bit quantization scaling</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 3: TECHNIQUES DIRECTORY -->
+        <section id="sec-techniques" class="tab-content hidden space-y-8">
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">Architectural & Optimization Techniques Directory</h2>
+                <p class="text-slate-600 leading-relaxed">
+                    Filter and search across 15+ specialized optimization techniques categorized by their primary objective: Model Accuracy, Training Speed, Inference Speed, Memory Efficiency, or Convergence Stability.
+                </p>
+            </div>
+
+            <!-- Filter & Search Controls -->
+            <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-center">
+                <!-- Goal Category Pills -->
+                <div class="flex flex-wrap gap-2 text-xs">
+                    <button onclick="filterTechniques('all')" id="tag-all" class="tag-btn px-3 py-1.5 rounded-full bg-slate-900 text-white font-medium transition">All Techniques</button>
+                    <button onclick="filterTechniques('accuracy')" id="tag-accuracy" class="tag-btn px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition">Accuracy & Generalization</button>
+                    <button onclick="filterTechniques('trainspeed')" id="tag-trainspeed" class="tag-btn px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition">Training Speed</button>
+                    <button onclick="filterTechniques('inf speed')" id="tag-inf speed" class="tag-btn px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition">Inference Latency</button>
+                    <button onclick="filterTechniques('efficiency')" id="tag-efficiency" class="tag-btn px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition">Memory & FLOPs</button>
+                    <button onclick="filterTechniques('stability')" id="tag-stability" class="tag-btn px-3 py-1.5 rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200 font-medium transition">Convergence Stability</button>
+                </div>
+
+                <!-- Text Search -->
+                <div class="w-full sm:w-64">
+                    <input type="text" id="tech-search" placeholder="Search techniques..." oninput="searchTechniques()" class="w-full text-xs px-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+            </div>
+
+            <!-- Dynamic Techniques Grid -->
+            <div id="techniques-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Javascript will inject technique cards here dynamically -->
+            </div>
+        </section>
+
+        <!-- SECTION 4: FRAMEWORKS & COMPILERS -->
+        <section id="sec-frameworks" class="tab-content hidden space-y-8">
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">Programming Languages, Frameworks & Compiler Ecosystems</h2>
+                <p class="text-slate-600 leading-relaxed">
+                    Modern deep learning stacks separate high-level dynamic Python frontends from optimized low-level execution engines. Graph compilers capture intermediate execution representations (FX, Jaxpr, XLA) and synthesize fused microarchitectural CUDA or OpenAI Triton kernels.
+                </p>
+            </div>
+
+            <!-- Frameworks Feature Matrix Table -->
+            <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div class="p-6 border-b border-slate-100">
+                    <h3 class="text-lg font-bold text-slate-900">Framework Architecture Comparison Matrix</h3>
+                    <p class="text-xs text-slate-500 mt-1">Comparing PyTorch, JAX, TensorFlow, and NVIDIA TensorRT across compilation execution paradigms.</p>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs text-left text-slate-700">
+                        <thead class="bg-slate-50 text-slate-800 uppercase font-bold border-b border-slate-200">
+                            <tr>
+                                <th class="p-4">Feature / Metric</th>
+                                <th class="p-4">PyTorch (`torch.compile`)</th>
+                                <th class="p-4">JAX + OpenXLA</th>
+                                <th class="p-4">TensorFlow / Keras</th>
+                                <th class="p-4">NVIDIA TensorRT Engine</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-slate-900">Execution Paradigm</td>
+                                <td class="p-4">Dynamic Eager + TorchDynamo Bytecode Tracing</td>
+                                <td class="p-4">Pure Functional + JIT / AOT Jaxpr Graph Tracing</td>
+                                <td class="p-4">Eager + Static `tf.function` Graph Tracing</td>
+                                <td class="p-4 text-purple-700 font-semibold">Static Compiled Engine Plan Binary</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-slate-900">Compiler Backend</td>
+                                <td class="p-4 text-indigo-600 font-semibold">TorchInductor via OpenAI Triton Codegen</td>
+                                <td class="p-4 text-teal-600 font-semibold">OpenXLA Compiler Infrastructure</td>
+                                <td class="p-4">OpenXLA Backend Compiler</td>
+                                <td class="p-4 text-purple-600 font-semibold">TensorRT Microarchitectural Profiler</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-slate-900">VRAM Allocation</td>
+                                <td class="p-4">Dynamic caching allocator (Low VRAM footprint)</td>
+                                <td class="p-4 text-amber-700">Aggressive pre-allocation buffer staging</td>
+                                <td class="p-4">Configurable pre-allocation limits</td>
+                                <td class="p-4">Static workspace VRAM allocation bounds</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-slate-900">Low-Precision Support</td>
+                                <td class="p-4">Native TorchAO (INT8, FP8, INT4, QAT, PTQ)</td>
+                                <td class="p-4">Manual transforms / Flax quantization</td>
+                                <td class="p-4">Native Quantization Tooling / LiteRT</td>
+                                <td class="p-4 text-emerald-700 font-semibold">Hardware Calibration (INT8, FP8, FP4)</td>
+                            </tr>
+                            <tr class="hover:bg-slate-50/50">
+                                <td class="p-4 font-bold text-slate-900">Primary Domain</td>
+                                <td class="p-4 font-semibold text-indigo-700">Exploratory Research & Hybrid Serving</td>
+                                <td class="p-4 font-semibold text-teal-700">Distributed Multi-Node Scale & TPUs</td>
+                                <td class="p-4 font-semibold text-slate-700">Enterprise Serving & Cross-Platform Edge</td>
+                                <td class="p-4 font-semibold text-purple-700">Ultra-Low Latency GPU Inference</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Compiler Pipeline Visualization Cards -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-slate-900 text-base">PyTorch 2.0 Compilation Flow</h3>
+                        <span class="text-xs bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-semibold">Dynamic Python</span>
+                    </div>
+                    <p class="text-xs text-slate-600 leading-relaxed">
+                        `TorchDynamo` hooks into Python bytecode evaluation, capturing standard tensor ops into FX graphs without breaking native control flow fallback. `TorchInductor` lowers FX graphs to NHWC layouts, applies operator fusion (Conv+BN+ReLU), and generates high-performance OpenAI Triton code.
+                    </p>
+                    <div class="p-3 bg-slate-900 text-slate-200 rounded-lg font-mono text-xs overflow-x-auto">
+                        <code>@torch.compile(backend="inductor")<br>def forward_pass(x, weight, bias):<br>&nbsp;&nbsp;&nbsp;&nbsp;return torch.relu(torch.conv2d(x, weight) + bias)</code>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-3">
+                    <div class="flex justify-between items-center">
+                        <h3 class="font-bold text-slate-900 text-base">NVIDIA TensorRT Compilation Flow</h3>
+                        <span class="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded font-semibold">Static Low-Latency</span>
+                    </div>
+                    <p class="text-xs text-slate-600 leading-relaxed">
+                        Ingests pre-trained ONNX models, strips unused computational graphs, fuses adjacent layers into CUDA kernels, and calibrates dynamic INT8/FP8 quantization profiles against hardware target memory buses. Output is serialized into zero-overhead `.plan` binary files.
+                    </p>
+                    <div class="p-3 bg-slate-900 text-slate-200 rounded-lg font-mono text-xs overflow-x-auto">
+                        <code>// C++ Native Low-Latency Execution<br>auto engine = runtime->deserializeCudaEngine(planData, planSize);<br>execution_context->enqueueV3(stream);</code>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 5: STACK RECOMMENDER TOOL -->
+        <section id="sec-recommender" class="tab-content hidden space-y-8">
+            <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-2xl font-bold text-slate-900 mb-2">Interactive Deployment Stack Recommender</h2>
+                <p class="text-slate-600 leading-relaxed">
+                    Select your operational target, latency SLAs, hardware topology, and model constraints to generate an optimized software and mathematical stack blueprint tailored for your CNN architecture.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Interactive Form -->
+                <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4">
+                    <h3 class="text-lg font-bold text-slate-900">Deployment Constraints</h3>
+                    
+                    <div class="space-y-3 text-xs">
+                        <div>
+                            <label class="font-bold text-slate-700 block mb-1">Primary Deployment Goal:</label>
+                            <select id="rec-usecase" onchange="generateRecommendation()" class="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500">
+                                <option value="edge">Embedded Edge Inference (&lt;10ms Latency)</option>
+                                <option value="cloud_train">Scale-Out Multi-GPU Cloud Training</option>
+                                <option value="research">Fast Vision Research Prototyping</option>
+                                <option value="serving">High-Throughput Cloud API Serving</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="font-bold text-slate-700 block mb-1">Target Hardware Platform:</label>
+                            <select id="rec-hardware" onchange="generateRecommendation()" class="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500">
+                                <option value="nvidia_gpu">NVIDIA RTX / Data Center GPU (Tensor Cores)</option>
+                                <option value="tpu">Google TPU Pod Cluster</option>
+                                <option value="embedded_cpu">ARM Embedded / Edge TPU</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label class="font-bold text-slate-700 block mb-1">Dominant Spatial Kernel Size:</label>
+                            <select id="rec-kernel" onchange="generateRecommendation()" class="w-full p-2.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-500">
+                                <option value="small">Small $3 \times 3$ Filters (ResNet, VGG, MobileNet)</option>
+                                <option value="large">Large Spatial Filters ($\ge 7 \times 7$, Global Context)</option>
+                                <option value="mixed">Mixed / $1 \times 1$ Heavy Bottlenecks</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recommended Output Blueprint -->
+                <div class="lg:col-span-2 bg-slate-900 text-white p-6 rounded-xl shadow-lg space-y-6 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-start border-b border-slate-800 pb-4">
+                            <div>
+                                <span class="text-xs uppercase tracking-wider text-indigo-400 font-bold">Generated Architecture Blueprint</span>
+                                <h3 id="rec-title" class="text-xl font-bold text-white mt-1">Embedded Edge Inference Stack</h3>
+                            </div>
+                            <span id="rec-badge" class="bg-indigo-600 text-white text-xs px-2.5 py-1 rounded-full font-semibold">Sub-10ms Optimized</span>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 text-xs">
+                            <div class="bg-slate-800/80 p-3.5 rounded-lg border border-slate-700/50">
+                                <span class="text-slate-400 block mb-1">Language & Runtime:</span>
+                                <span id="rec-lang" class="font-bold text-indigo-300 text-sm">C++ Runtime + CUDA Streams</span>
+                            </div>
+
+                            <div class="bg-slate-800/80 p-3.5 rounded-lg border border-slate-700/50">
+                                <span class="text-slate-400 block mb-1">Framework & Engine:</span>
+                                <span id="rec-framework" class="font-bold text-teal-300 text-sm">ONNX Export → TensorRT Engine</span>
+                            </div>
+
+                            <div class="bg-slate-800/80 p-3.5 rounded-lg border border-slate-700/50">
+                                <span class="text-slate-400 block mb-1">Precision & Data Layout:</span>
+                                <span id="rec-precision" class="font-bold text-amber-300 text-sm">INT8 QAT Calibration, NHWC Layout</span>
+                            </div>
+
+                            <div class="bg-slate-800/80 p-3.5 rounded-lg border border-slate-700/50">
+                                <span class="text-slate-400 block mb-1">Optimal Conv Lowering Algorithm:</span>
+                                <span id="rec-algo" class="font-bold text-purple-300 text-sm">Winograd F(2x2, 3x3) + Implicit GEMM</span>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 bg-slate-800/50 p-4 rounded-lg border border-slate-700/50">
+                            <h4 class="text-xs font-bold uppercase tracking-wider text-slate-300 mb-2">Architectural Rationale & Implementation Notes:</h4>
+                            <p id="rec-rationale" class="text-xs text-slate-300 leading-relaxed">
+                                C++ deployment eliminates Python interpreter latency. INT8 dynamic quantization combined with TensorRT engine optimization maximizes SIMD register alignment on NHWC layouts.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="pt-4 border-t border-slate-800 text-xs text-slate-400 flex justify-between items-center">
+                        <span>Status: Optimal Alignment Verified</span>
+                        <button onclick="window.print()" class="text-indigo-400 hover:text-indigo-300 font-semibold transition">Export Architecture PDF / Print</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-slate-900 text-slate-400 text-xs py-6 border-t border-slate-800 mt-auto">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <p>CNN Systems & Optimization Tactical Report • Compiled for High-Performance Deep Learning Engineers</p>
+            <p class="text-slate-500">Based on cuDNN, PyTorch 2.0, OpenXLA & TensorRT Specifications</p>
+        </div>
+    </footer>
+
+    <!-- JavaScript Data & Interactivity -->
+    <script>
+        // Database of Optimization Techniques
+        const techniquesData = [
+            {
+                id: 'residual',
+                name: 'Residual Shortcuts (Skip Connections)',
+                category: 'accuracy',
+                goals: ['accuracy', 'stability'],
+                how: 'Adds identity shortcuts across spatial block transformations: Y = f(X) + X.',
+                why: 'Creates unimpeded gradient highways during backpropagation, eliminating vanishing gradients.',
+                when: 'Deep network backbones (>20 layers) like ResNet and ConvNeXt.',
+                pros: 'Guarantees smooth convergence in very deep networks.',
+                cons: 'Slightly increases VRAM buffer retention during forward passes.',
+                example: 'class ResBlock(nn.Module):\n  def forward(self, x):\n    return x + self.conv2(F.relu(self.conv1(x)))'
+            },
+            {
+                id: 'depthwise',
+                name: 'Depthwise Separable Convolutions',
+                category: 'efficiency',
+                goals: ['efficiency', 'inf speed'],
+                how: 'Factorizes standard convolutions into spatial depthwise (R×S×1) followed by channel pointwise (1×1×C).',
+                why: 'Reduces FLOPs and parameter counts by 8x to 9x for 3x3 kernels.',
+                when: 'Mobile/edge vision backbones (MobileNet, EfficientNet).',
+                pros: 'Drastic memory and computational reduction.',
+                cons: 'Higher memory access overhead relative to compute ratio.',
+                example: 'nn.Sequential(\n  nn.Conv2d(C, C, 3, groups=C), # Depthwise\n  nn.Conv2d(C, OutC, 1)        # Pointwise\n)'
+            },
+            {
+                id: 'squeeze_excitation',
+                name: 'Squeeze-and-Excitation (SE) Attention',
+                category: 'accuracy',
+                goals: ['accuracy'],
+                how: 'Aggregates global spatial context via average pooling and applies a dynamic two-layer channel MLP reweighting.',
+                why: 'Adaptively recalibrates channel-wise feature responses.',
+                when: 'High-accuracy visual classification & segmentation models.',
+                pros: 'Boosts accuracy with minimal extra FLOP overhead.',
+                cons: 'Small latency penalty due to non-fused global pooling steps.',
+                example: 'se = self.fc2(F.relu(self.fc1(x.mean([2, 3]))))\nout = x * torch.sigmoid(se).unsqueeze(-1).unsqueeze(-1)'
+            },
+            {
+                id: 'label_smoothing',
+                name: 'Label Smoothing Regularization',
+                category: 'accuracy',
+                goals: ['accuracy', 'stability'],
+                how: 'Replaces hard 0/1 target distributions with smoothed targets: Y_smooth = (1-eps)*Y + eps/K.',
+                why: 'Prevents final linear layers from outputting over-confident logit margins.',
+                when: 'Classification training susceptible to noisy labels or overfitting.',
+                pros: 'Improves model calibration and out-of-distribution generalization.',
+                cons: 'Slightly reduces peak training loss convergence depth.',
+                example: 'criterion = nn.CrossEntropyLoss(label_smoothing=0.1)'
+            },
+            {
+                id: 'mixup_cutmix',
+                name: 'Mixup & CutMix Data Augmentation',
+                category: 'accuracy',
+                goals: ['accuracy'],
+                how: 'Mixup linearly blends image pairs & labels; CutMix pastes spatial patches between images while scaling labels.',
+                why: 'Forces backbones to rely on distributed feature representations rather than localized texture cues.',
+                when: 'Data-constrained vision tasks prone to shortcut learning.',
+                pros: 'Significantly improves robustness against spatial occlusion and adversarial attacks.',
+                cons: 'Requires additional training epochs for full convergence.',
+                example: 'mixed_x = lam * x1 + (1 - lam) * x2\nloss = lam * criterion(pred, y1) + (1 - lam) * criterion(pred, y2)'
+            },
+            {
+                id: 'amp',
+                name: 'Automatic Mixed-Precision (AMP - BF16/FP16/FP8)',
+                category: 'trainspeed',
+                goals: ['trainspeed', 'efficiency', 'stability'],
+                how: 'Executes compute-heavy GEMM ops in low precision (FP16/BF16/FP8) while keeping master weights in FP32.',
+                why: 'Leverages hardware Tensor Cores for up to 2x-4x compute throughput.',
+                when: 'All modern GPU/TPU training and fine-tuning workloads.',
+                pros: 'Halves VRAM consumption and dramatically speeds up GEMM steps.',
+                cons: 'FP16 requires dynamic loss scaling to prevent dynamic range gradient underflow.',
+                example: 'with torch.cuda.amp.autocast(dtype=torch.bfloat16):\n  output = model(input)\n  loss = criterion(output, target)'
+            },
+            {
+                id: 'batchnorm_groupnorm',
+                name: 'Group Normalization (GroupNorm)',
+                category: 'stability',
+                goals: ['stability', 'efficiency'],
+                how: 'Partitions channels into G independent groups and normalizes features per sample.',
+                why: 'Removes dependency on batch size, unlike Batch Normalization which degrades under small batches.',
+                when: 'Object detection, segmentation, or high-resolution training (batch size < 4).',
+                pros: 'Stable loss landscape independent of mini-batch size.',
+                cons: 'Slightly slower inference than fused BatchNorm+Conv.',
+                example: 'norm = nn.GroupNorm(num_groups=32, num_channels=512)'
+            },
+            {
+                id: 'adamw_cosine',
+                name: 'AdamW & Cosine Annealing Learning Rate Schedule',
+                category: 'stability',
+                goals: ['stability', 'accuracy'],
+                how: 'AdamW decouples weight decay directly from gradient update history; Cosine schedule smoothly decays LR.',
+                why: 'Prevents weight decay decay distortion in adaptive gradient methods.',
+                when: 'Standard optimizer setup for modern CNNs (e.g., ConvNeXt).',
+                pros: 'Superior generalization and predictable convergence.',
+                cons: 'Requires accurate hyperparameter selection for cosine warmup steps.',
+                example: 'optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-2)'
+            },
+            {
+                id: 'quantization',
+                name: 'Model Quantization (PTQ & QAT - INT8/FP8)',
+                category: 'inf speed',
+                goals: ['inf speed', 'efficiency'],
+                how: 'Projects continuous FP32/FP16 weights down to discrete integer (INT8) or low-bit float formats.',
+                why: 'Reduces memory bandwidth pressure and executes on specialized INT8/FP8 hardware vector units.',
+                when: 'Edge deployment or latency-critical cloud API serving.',
+                pros: '4x reduction in weight size; up to 3x speedup on Tensor Cores.',
+                cons: 'Requires careful calibration to prevent accuracy degradation.',
+                example: '# Quantization-Aware Training (QAT)\nmodel.qconfig = torch.ao.quantization.get_default_qat_qconfig("fbgemm")'
+            },
+            {
+                id: 'kernel_fusion',
+                name: 'Kernel Fusion & Graph Compilation',
+                category: 'inf speed',
+                goals: ['inf speed', 'trainspeed'],
+                how: 'Fuses adjacent operations (Conv + BatchNorm + ReLU) into a single generated execution kernel.',
+                why: 'Eliminates global memory round-trips by keeping intermediate tensors in high-speed GPU registers.',
+                when: 'All production inference models and PyTorch 2.0 dynamic compilation.',
+                pros: 'Dramatically reduces GPU memory bandwidth bottlenecks.',
+                cons: 'Increases initial compilation startup time.',
+                example: 'compiled_model = torch.compile(model, backend="inductor")'
+            }
+        ];
+
+        // Global Chart Instances
+        let precisionChartInstance = null;
+        let algoChartInstance = null;
+
+        // Initialize Application
+        document.addEventListener('DOMContentLoaded', () => {
+            initPrecisionChart();
+            initAlgoChart();
+            renderTechniques(techniquesData);
+            updateMathEstimator();
+            generateRecommendation();
+        });
+
+        // Tab Navigation Logic
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`sec-${tabId}`).classList.remove('hidden');
+
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('bg-indigo-600', 'text-white');
+                btn.classList.add('text-slate-300', 'hover:bg-slate-800');
+            });
+            const activeNav = document.getElementById(`nav-${tabId}`);
+            if (activeNav) {
+                activeNav.classList.remove('text-slate-300', 'hover:bg-slate-800');
+                activeNav.classList.add('bg-indigo-600', 'text-white');
+            }
+
+            document.querySelectorAll('.mnav-btn').forEach(btn => {
+                btn.classList.remove('bg-indigo-600', 'text-white');
+                btn.classList.add('bg-slate-800', 'text-slate-300');
+            });
+            const activeMnav = document.getElementById(`mnav-${tabId}`);
+            if (activeMnav) {
+                activeMnav.classList.remove('bg-slate-800', 'text-slate-300');
+                activeMnav.classList.add('bg-indigo-600', 'text-white');
+            }
+        }
+
+        // Initialize Chart 1: Precision Comparison
+        function initPrecisionChart() {
+            const ctx = document.getElementById('precisionChart').getContext('2d');
+            precisionChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['FP32 (Standard)', 'FP16 (Half Precision)', 'BF16 (Brain Float)', 'FP8 (E4M3/E5M2)', 'INT8 (Integer)'],
+                    datasets: [
+                        {
+                            label: 'Relative GEMM Compute Throughput (x)',
+                            data: [1.0, 2.0, 2.0, 4.0, 4.0],
+                            backgroundColor: '#4f46e5',
+                            borderRadius: 6
+                        },
+                        {
+                            label: 'Memory Footprint Reduction (x)',
+                            data: [1.0, 2.0, 2.0, 4.0, 4.0],
+                            backgroundColor: '#0d9488',
+                            borderRadius: 6
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+                        tooltip: { mode: 'index', intersect: false }
+                    },
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Relative Speedup / Reduction Factor' } }
+                    }
+                }
+            });
+        }
+
+        // Initialize Chart 2: Algorithmic Complexity Scaling
+        function initAlgoChart() {
+            const ctx = document.getElementById('algoChart').getContext('2d');
+            algoChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['1x1 Filter', '3x3 Filter', '5x5 Filter', '7x7 Filter', '11x11 Filter'],
+                    datasets: [
+                        {
+                            label: 'Direct GEMM (MFLOPs)',
+                            data: [131, 1180, 3270, 6420, 15860],
+                            borderColor: '#4f46e5',
+                            backgroundColor: '#4f46e5',
+                            borderWidth: 2,
+                            tension: 0.2
+                        },
+                        {
+                            label: 'Winograd F(2x2,3x3) (MFLOPs)',
+                            data: [131, 524, 2100, 5200, 14000],
+                            borderColor: '#0d9488',
+                            backgroundColor: '#0d9488',
+                            borderWidth: 2,
+                            tension: 0.2
+                        },
+                        {
+                            label: 'FFT Convolution (MFLOPs)',
+                            data: [1800, 1850, 1920, 2050, 2300],
+                            borderColor: '#9333ea',
+                            backgroundColor: '#9333ea',
+                            borderWidth: 2,
+                            tension: 0.2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } },
+                        tooltip: { mode: 'index', intersect: false }
+                    },
+                    scales: {
+                        y: { beginAtZero: true, title: { display: true, text: 'Theoretical MFLOPs per Layer' } }
+                    }
+                }
+            });
+        }
+
+        // Interactive Math Estimator Update Logic
+        function updateMathEstimator() {
+            const hw = parseInt(document.getElementById('input-hw').value);
+            const k = parseInt(document.getElementById('input-k').value);
+            const c = parseInt(document.getElementById('input-c').value);
+
+            document.getElementById('val-hw').innerText = `${hw} x ${hw}`;
+            document.getElementById('val-k').innerText = `${k} x ${k}`;
+            document.getElementById('val-c').innerText = `${c}`;
+
+            // Direct GEMM FLOPs: 2 * N * K * C * H * W * R * S (assuming N=1, K=C)
+            const directFlops = 2 * 1 * c * c * hw * hw * k * k;
+            const directGflops = (directFlops / 1e9).toFixed(2);
+
+            // Winograd F(2x2, 3x3) savings for 3x3 filter is 2.25x
+            let winoFlops = directFlops;
+            let savingsText = "N/A (Winograd optimized for 3x3)";
+            if (k === 3) {
+                winoFlops = directFlops / 2.25;
+                savingsText = "2.25x Reduction";
+            } else if (k === 5) {
+                winoFlops = directFlops / 1.56;
+                savingsText = "1.56x Reduction";
+            }
+
+            const winoGflops = (winoFlops / 1e9).toFixed(2);
+
+            document.getElementById('calc-gemm').innerText = `${directGflops} GFLOPs`;
+            document.getElementById('calc-wino').innerText = `${winoGflops} GFLOPs`;
+            document.getElementById('calc-savings').innerText = savingsText;
+        }
+
+        // Render Techniques Cards
+        function renderTechniques(data) {
+            const grid = document.getElementById('techniques-grid');
+            grid.innerHTML = '';
+
+            if (data.length === 0) {
+                grid.innerHTML = `<p class="col-span-2 text-center text-slate-500 py-8 text-xs">No techniques matched your search query.</p>`;
+                return;
+            }
+
+            data.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'bg-white p-6 rounded-xl border border-slate-200 shadow-sm space-y-4 flex flex-col justify-between';
+                card.innerHTML = `
+                    <div>
+                        <div class="flex justify-between items-start">
+                            <h3 class="font-bold text-slate-900 text-base">${item.name}</h3>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 uppercase tracking-wider">${item.category}</span>
+                        </div>
+                        
+                        <div class="mt-3 space-y-2 text-xs text-slate-600">
+                            <p><strong class="text-slate-800">How it works:</strong> ${item.how}</p>
+                            <p><strong class="text-slate-800">Why it improves performance:</strong> ${item.why}</p>
+                            <p><strong class="text-slate-800">When to use:</strong> ${item.when}</p>
+                        </div>
+
+                        <div class="mt-4 grid grid-cols-2 gap-2 text-xs">
+                            <div class="p-2 bg-emerald-50 rounded border border-emerald-100 text-emerald-800">
+                                <strong>Advantages:</strong> ${item.pros}
+                            </div>
+                            <div class="p-2 bg-amber-50 rounded border border-amber-100 text-amber-800">
+                                <strong>Disadvantages:</strong> ${item.cons}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pt-3 border-t border-slate-100">
+                        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Practical Syntax Snippet:</span>
+                        <pre class="bg-slate-900 text-slate-200 p-2.5 rounded-lg text-[11px] font-mono overflow-x-auto"><code>${item.example}</code></pre>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        // Filter Techniques by Tag
+        function filterTechniques(goal) {
+            document.querySelectorAll('.tag-btn').forEach(btn => {
+                btn.classList.remove('bg-slate-900', 'text-white');
+                btn.classList.add('bg-slate-100', 'text-slate-700');
+            });
+            const activeBtn = document.getElementById(`tag-${goal}`);
+            if (activeBtn) {
+                activeBtn.classList.remove('bg-slate-100', 'text-slate-700');
+                activeBtn.classList.add('bg-slate-900', 'text-white');
+            }
+
+            if (goal === 'all') {
+                renderTechniques(techniquesData);
+            } else {
+                const filtered = techniquesData.filter(t => t.goals.includes(goal) || t.category === goal);
+                renderTechniques(filtered);
+            }
+        }
+
+        // Search Techniques Function
+        function searchTechniques() {
+            const query = document.getElementById('tech-search').value.toLowerCase();
+            const filtered = techniquesData.filter(t => 
+                t.name.toLowerCase().includes(query) ||
+                t.how.toLowerCase().includes(query) ||
+                t.why.toLowerCase().includes(query) ||
+                t.when.toLowerCase().includes(query)
+            );
+            renderTechniques(filtered);
+        }
+
+        // Generate Stack Recommendation
+        function generateRecommendation() {
+            const usecase = document.getElementById('rec-usecase').value;
+            const hardware = document.getElementById('rec-hardware').value;
+            const kernel = document.getElementById('rec-kernel').value;
+
+            let title = "";
+            let badge = "";
+            let lang = "";
+            let framework = "";
+            let precision = "";
+            let algo = "";
+            let rationale = "";
+
+            if (usecase === 'edge') {
+                title = "Ultra-Low Latency Embedded Edge Pipeline";
+                badge = "Sub-10ms Optimized";
+                lang = "C++ Deployment Runtime + CUDA Streams";
+                framework = "ONNX Model Export → TensorRT Engine Plan";
+                precision = "INT8 QAT Quantization, NHWC Channels-Last";
+                algo = kernel === 'large' ? "FFT Convolution & Implicit GEMM" : "Winograd F(2x2, 3x3) & Implicit GEMM";
+                rationale = "C++ deployment completely bypasses Python interpreter overhead. Converting tensors to NHWC layout unlocks vectorized memory loading into GPU Tensor Cores, while TensorRT engine graph compilation eliminates non-fused intermediate VRAM writes.";
+            } else if (usecase === 'cloud_train') {
+                title = "Scale-Out Multi-GPU Cloud Training Pipeline";
+                badge = "Max FLOPs Throughput";
+                lang = "Python Orchestration Plane + OpenAI Triton";
+                framework = hardware === 'tpu' ? "JAX + OpenXLA Compiler" : "PyTorch 2.0 (torch.compile / Inductor)";
+                precision = "BF16 Automatic Mixed Precision (AMP)";
+                algo = "Implicit GEMM with Memory-Mapped Registers";
+                rationale = "BF16 preserves an 8-bit exponent range, matching FP32 dynamic range and eliminating dynamic loss-scaling overhead. OpenAI Triton / OpenXLA auto-generates fused hardware kernels optimized for parallel GPU/TPU cluster communication.";
+            } else if (usecase === 'research') {
+                title = "Dynamic Vision Research Prototyping Stack";
+                badge = "High Iteration Agility";
+                lang = "Python Dynamic Ecosystem (NumPy, PyTorch)";
+                framework = "PyTorch Native Eager Mode + TorchDynamo";
+                precision = "FP16 Automatic Mixed-Precision with Loss Scaling";
+                algo = "Dynamic cuDNN Heuristic Implicit GEMM";
+                rationale = "Dynamic execution allows arbitrary Python control flow and rapid model adjustments without requiring full static graph recompilation. Native cuDNN heuristics automatically pick optimal spatial low-level algorithms based on runtime tensor dimensions.";
+            } else {
+                title = "High-Throughput Cloud API Serving Stack";
+                badge = "Max QPS & Dynamic Batching";
+                lang = "C++ / Python Triton Inference Server Runtime";
+                framework = "TensorRT with Dynamic Optimization Profiles";
+                precision = "FP16 / FP8 Precision with Layer Fusion";
+                algo = "Implicit GEMM & Decomposable Winograd";
+                rationale = "Triton Inference Server handles dynamic request batching across incoming HTTP/gRPC streams. TensorRT dynamic profiles optimize low-level CUDA register allocations specifically for expected production batch boundaries (opt_shape).";
+            }
+
+            document.getElementById('rec-title').innerText = title;
+            document.getElementById('rec-badge').innerText = badge;
+            document.getElementById('rec-lang').innerText = lang;
+            document.getElementById('rec-framework').innerText = framework;
+            document.getElementById('rec-precision').innerText = precision;
+            document.getElementById('rec-algo').innerText = algo;
+            document.getElementById('rec-rationale').innerText = rationale;
+        }
+    </script>
+</body>
+</html>

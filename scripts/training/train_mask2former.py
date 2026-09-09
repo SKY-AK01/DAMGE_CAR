@@ -9,15 +9,22 @@ on the COCO-formatted car-parts dataset.
 import os
 import sys
 import json
+import math
 import time
 import argparse
 from pathlib import Path
 import numpy as np
 import torch
+from PIL import Image as PILImage
+from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# pycocotools: imported at module level so DataLoader workers (which use
+# multiprocessing 'spawn' on Windows) don't re-import it on every sample.
+from pycocotools import mask as mask_utils
 
 from scripts.evaluation.unified_evaluator import UnifiedEvaluator
 from scripts.evaluation.unified_logger import UnifiedLogger
@@ -54,7 +61,6 @@ class COCOMask2FormerDataset(Dataset):
         img_info = self.images_by_id[img_id]
         img_path = self.images_dir / img_info["file_name"]
 
-        from PIL import Image
         image = Image.open(img_path).convert("RGB")
         w, h = image.size
 
@@ -62,7 +68,6 @@ class COCOMask2FormerDataset(Dataset):
         instance_masks = []
         class_labels = []
 
-        from pycocotools import mask as mask_utils
         for ann in anns:
             seg = ann.get("segmentation")
             if not seg:
@@ -100,7 +105,6 @@ class COCOMask2FormerDataset(Dataset):
         _, proc_h, proc_w = pixel_values.shape
 
         # ── Build mask_labels (N, H', W') float32 and class_labels (N,) int64 ─
-        from PIL import Image as PILImage
         mask_tensors  = []
         label_tensors = []
         for m, cat_id in zip(instance_masks, class_labels):
@@ -116,6 +120,7 @@ class COCOMask2FormerDataset(Dataset):
             "mask_labels":  torch.stack(mask_tensors),        # (N, H', W')
             "class_labels": torch.stack(label_tensors),       # (N,)
             "image_id":     img_id,
+            "orig_size":    (h, w),                           # actual image dims for post-processing
         }
         if pixel_mask is not None:
             result["pixel_mask"] = pixel_mask
@@ -132,12 +137,17 @@ def collate_fn(batch):
     mask_labels  = [b["mask_labels"]  for b in batch]
     class_labels = [b["class_labels"] for b in batch]
     image_ids    = [b["image_id"]     for b in batch]
+    # orig_size: list of (h, w) tuples — actual image dimensions before processor resize.
+    # Used in the val loop so post_process_instance_segmentation rescales masks to the
+    # correct resolution rather than the previously hardcoded (640, 640).
+    orig_sizes   = [b["orig_size"]    for b in batch]
 
     res = {
         "pixel_values": pixel_values,
         "mask_labels":  mask_labels,
         "class_labels": class_labels,
         "image_ids":    image_ids,
+        "orig_sizes":   orig_sizes,
     }
     if pixel_mask is not None:
         res["pixel_mask"] = pixel_mask
@@ -150,14 +160,21 @@ def main():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--num_workers", type=int, default=8,
-                        help="DataLoader workers (default raised 4->8 to match train_maskrcnn.py "
-                             "and keep workers ahead of the GPU between batches).")
+    parser.add_argument("--num_workers", type=int, default=4,
+                        help="DataLoader workers. Default lowered 8→4 for Windows: 'spawn' "
+                             "multiprocessing means each worker boots a fresh interpreter, so "
+                             "8 workers consume ~3-4 GB RAM before a single batch is loaded. "
+                             "4 workers with prefetch_factor=4 is more efficient on Windows.")
     parser.add_argument("--output_dir", default="runs_comparison/mask2former")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
     parser.add_argument("--val_interval", type=int, default=5,
                         help="Run validation + COCO eval every N epochs (default: 5). "
                              "Use 1 to validate every epoch.")
+    parser.add_argument("--accum_steps", type=int, default=4,
+                        help="Gradient accumulation steps (default: 4). "
+                             "Effective batch = batch * accum_steps. "
+                             "With batch=2 and accum_steps=4 the optimizer sees an effective "
+                             "batch of 8 without holding 8 images in VRAM simultaneously.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -191,19 +208,90 @@ def main():
     )
     model.to(device)
 
+    # ── Stage-2 audit: log point-sampling config so every run is self-documenting ──
+    # Per the Mask2Former paper, loss is computed on randomly sampled points rather
+    # than the full mask, reducing training memory ~3×.  These three values control
+    # that sampling.  If train_num_points were 0 or absent, point sampling would be
+    # off and we'd be paying full-resolution mask loss cost.
+    cfg = model.config
+    _npts   = getattr(cfg, "train_num_points",        "MISSING")
+    _over   = getattr(cfg, "oversample_ratio",         "MISSING")
+    _imp    = getattr(cfg, "importance_sample_ratio",  "MISSING")
+    print(f"\n[Mask2Former config — point-based mask loss sampling]")
+    print(f"  train_num_points        = {_npts}   (official default: 12544)")
+    print(f"  oversample_ratio        = {_over}  (official default: 3.0)")
+    print(f"  importance_sample_ratio = {_imp}  (official default: 0.75)")
+    if _npts == "MISSING" or _npts == 0:
+        print(f"  [WARNING] Point sampling is OFF — full-resolution mask loss is active.")
+        print(f"            Set model.config.train_num_points = 12544 before training.")
+    else:
+        print(f"  [OK] Point sampling active — expected ~3× memory reduction vs full-mask loss.")
+    print()
+
     train_ds = COCOMask2FormerDataset(train_images, train_json, processor)
     val_ds   = COCOMask2FormerDataset(val_images, val_json, processor)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True,
                               collate_fn=collate_fn, num_workers=args.num_workers,
                               pin_memory=True, persistent_workers=args.num_workers > 0,
-                              prefetch_factor=2 if args.num_workers > 0 else None)
+                              prefetch_factor=4 if args.num_workers > 0 else None)
     val_loader   = DataLoader(val_ds, batch_size=args.batch, shuffle=False,
                               collate_fn=collate_fn, num_workers=args.num_workers,
                               pin_memory=True, persistent_workers=args.num_workers > 0,
-                              prefetch_factor=2 if args.num_workers > 0 else None)
+                              prefetch_factor=4 if args.num_workers > 0 else None)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    # ── Param groups: backbone at 0.1× LR, head/decoder at full LR ─────────
+    # The Swin backbone is pretrained; applying the same LR as the randomly-
+    # initialised segmentation head destabilises learned features in early epochs.
+    # Standard fine-tuning practice is backbone ~10× lower than the head.
+    backbone_params = []
+    head_params     = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        # pixel_level_module.encoder is the Swin backbone
+        if "pixel_level_module.encoder" in name:
+            backbone_params.append(param)
+        else:
+            head_params.append(param)
+
+    backbone_lr = args.lr * 0.1   # e.g. 1e-5 when lr=1e-4
+    head_lr     = args.lr         # e.g. 1e-4
+
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": backbone_params, "lr": backbone_lr, "name": "backbone"},
+            {"params": head_params,     "lr": head_lr,     "name": "head"},
+        ],
+        weight_decay=1e-4,
+    )
+    print(f"[OK] AdamW param groups: backbone lr={backbone_lr:.2e}  |  head lr={head_lr:.2e}")
+    print(f"     backbone params: {len(backbone_params)}  |  head params: {len(head_params)}")
+
+    # ── Cosine LR schedule with linear warmup ────────────────────────────────
+    # Warmup over 10% of total optimizer steps prevents early gradient explosion
+    # when the head is randomly initialised.  After warmup, cosine decay brings
+    # LR smoothly to near-zero, avoiding the stall that a flat LR causes in
+    # later epochs.
+    #
+    # Total optimizer steps = ceil(batches_per_epoch / accum_steps) * epochs
+    batches_per_epoch  = len(train_loader)
+    steps_per_epoch    = max(1, batches_per_epoch // args.accum_steps)
+    total_steps        = steps_per_epoch * args.epochs
+    warmup_steps       = max(1, int(total_steps * 0.10))
+
+    def warmup_cosine_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_cosine_lambda)
+
+    print(f"[OK] LR schedule: linear warmup ({warmup_steps} steps) → cosine decay ({total_steps} total steps)")
+    print(f"     steps_per_epoch={steps_per_epoch}  |  accum_steps={args.accum_steps}  |  "
+          f"effective batch={args.batch * args.accum_steps}")
+
     # AMP: mixed precision for faster training and lower VRAM usage
     # (mirrors train_maskrcnn.py which fixed NaN/overflow with float() casting)
     use_amp = device == "cuda"
@@ -217,31 +305,51 @@ def main():
 
     print(f"[*] Starting Mask2Former Training for {args.epochs} epochs...")
 
+    global_step = 0  # counts optimizer steps (not batch steps) for scheduler
+
     for epoch in range(1, args.epochs + 1):
         model.train()
         start_time = time.time()
         running_loss = 0.0
+        optimizer.zero_grad(set_to_none=True)  # reset at epoch start
+
         for batch_idx, batch in enumerate(train_loader):
             if args.max_batches and batch_idx >= args.max_batches:
                 break
             pixel_values = batch["pixel_values"].to(device)
-            mask_labels = [m.to(device) for m in batch["mask_labels"]]
+            mask_labels  = [m.to(device) for m in batch["mask_labels"]]
             class_labels = [c.to(device) for c in batch["class_labels"]]
 
-            optimizer.zero_grad()
             with torch.amp.autocast("cuda", enabled=use_amp):
                 outputs = model(
                     pixel_values=pixel_values,
                     mask_labels=mask_labels,
                     class_labels=class_labels
                 )
-                loss = outputs.loss
+                # Scale loss by 1/accum_steps so that gradients accumulated over
+                # accum_steps micro-batches equal a true mean over the full batch.
+                loss = outputs.loss / args.accum_steps
 
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
 
-            running_loss += loss.item()
+            # Only step the optimizer every accum_steps batches (or at epoch end)
+            is_last_batch = (batch_idx + 1) == len(train_loader)
+            if (batch_idx + 1) % args.accum_steps == 0 or is_last_batch:
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+
+                # ── LR diagnostic: print per-group LRs at first two optimizer steps
+                #    of epoch 1 so we can confirm warmup + param groups are wired correctly.
+                if epoch == 1 and global_step <= 2:
+                    lrs = {pg["name"]: pg["lr"] for pg in optimizer.param_groups}
+                    print(f"    [LR check] optimizer step {global_step}: "
+                          + "  ".join(f"{k}={v:.3e}" for k, v in lrs.items()))
+
+            # Accumulate unscaled loss for logging (multiply back by accum_steps)
+            running_loss += loss.item() * args.accum_steps
 
         epoch_time = time.time() - start_time
         avg_train_loss = running_loss / max(len(train_loader), 1)
@@ -256,10 +364,18 @@ def main():
             with torch.no_grad():
                 for batch in val_loader:
                     pixel_values = batch["pixel_values"].to(device)
-                    outputs = model(pixel_values=pixel_values)
-                    
+                    # autocast in val matches the precision used during training,
+                    # halving VRAM usage and speeding up val forward passes.
+                    with torch.amp.autocast("cuda", enabled=use_amp):
+                        outputs = model(pixel_values=pixel_values)
+
+                    # Use actual image dimensions (h, w) per sample so that
+                    # post_process_instance_segmentation rescales prediction masks
+                    # back to the true image resolution.  The previous hardcoded
+                    # (640, 640) produced misaligned masks whenever an image was
+                    # not exactly 640×640, silently corrupting mAP numbers.
                     results = processor.post_process_instance_segmentation(
-                        outputs, target_sizes=[(640, 640)] * len(batch["image_ids"])
+                        outputs, target_sizes=batch["orig_sizes"]
                     )
                     
                     for img_id, res in zip(batch["image_ids"], results):
@@ -289,7 +405,7 @@ def main():
         train_stats = {
             "train_loss": avg_train_loss,
             "val_loss": 0.0,
-            "lr": optimizer.param_groups[0]["lr"],
+            "lr": optimizer.param_groups[1]["lr"],  # log head LR (index 1 = head group)
             "gpu_mem_gb": torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
             "epoch_time_sec": epoch_time,
             "images_sec": len(train_ds) / max(epoch_time, 1e-3)
