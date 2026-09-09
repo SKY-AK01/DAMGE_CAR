@@ -100,21 +100,44 @@ def mrcnn_collate(batch):
 
 # ── Graph-break analysis ───────────────────────────────────────────────────
 
-def analyse_graph_breaks(model, sample_batch, model_type):
+def analyse_graph_breaks(model, sample_batch, model_type, capture_scalars=False):
     """
     Use torch._dynamo.explain() to count graph breaks without compiling.
     Returns (n_graphs, n_breaks, reasons_list).
     All results are purely structural — valid on CPU and GPU alike.
+
+    capture_scalars=True mirrors what we'd set in training to reduce breaks
+    caused by Tensor.item() calls (e.g. in Mask2Former's deformable attention).
+    Run twice — without and with — to see the real vs optimistic break count.
     """
     try:
         import torch._dynamo as dynamo
 
-        if model_type == "m2f":
-            pv = sample_batch["pixel_values"].to(DEVICE)
-            explanation = dynamo.explain(lambda x: model(pixel_values=x))(pv)
-        else:
-            imgs = [t.to(DEVICE) for t in sample_batch]
-            explanation = dynamo.explain(lambda x: model(x))(imgs)
+        # Suppress the onnxruntime/NumPy 2.x import error that fires during
+        # dynamo's lazy backend registration on some VM setups.  It's harmless
+        # for our purposes (we're not using the onnxrt backend) but it prints
+        # a noisy traceback.
+        import warnings
+        warnings.filterwarnings(
+            "ignore",
+            message=".*numpy.*",
+            category=UserWarning,
+        )
+
+        prev = torch._dynamo.config.capture_scalar_outputs
+        if capture_scalars:
+            torch._dynamo.config.capture_scalar_outputs = True
+
+        try:
+            if model_type == "m2f":
+                pv = sample_batch["pixel_values"].to(DEVICE)
+                explanation = dynamo.explain(lambda x: model(pixel_values=x))(pv)
+            else:
+                imgs = [t.to(DEVICE) for t in sample_batch]
+                explanation = dynamo.explain(lambda x: model(x))(imgs)
+        finally:
+            torch._dynamo.config.capture_scalar_outputs = prev
+            torch._dynamo.reset()   # clear cached graphs between runs
 
         n_graphs = len(explanation.graphs)
         n_breaks = len(explanation.break_reasons)
@@ -246,7 +269,11 @@ def run_mask2former(ds_path, do_throughput, warmup, timed, limit):
     # ── 1. Graph-break analysis ────────────────────────────────────────────
     print("\n  [Step 1] Graph-break analysis (dynamo.explain) ...")
     n_graphs, n_breaks, reasons = analyse_graph_breaks(model, sample, "m2f")
-    _print_breaks(n_graphs, n_breaks, reasons)
+    # Also check with capture_scalar_outputs=True — Mask2Former's Tensor.item()
+    # breaks in multi_scale_deformable_attention can be resolved with that flag.
+    n_graphs_cs, n_breaks_cs, _ = analyse_graph_breaks(
+        model, sample, "m2f", capture_scalars=True)
+    _print_breaks(n_graphs, n_breaks, reasons, n_graphs_cs, n_breaks_cs)
 
     # ── 2. Compile correctness (one forward pass) ─────────────────────────
     print("\n  [Step 2] Compile correctness — one forward pass each ...")
@@ -268,9 +295,12 @@ def run_mask2former(ds_path, do_throughput, warmup, timed, limit):
     else:
         print("\n  [Step 3] Throughput — SKIPPED (CPU-only; re-run with --throughput on GPU VM)")
 
-    verdict = _verdict(n_breaks, ok, eager_fps, compiled_fps, err)
+    verdict = _verdict(n_breaks_cs if n_breaks_cs is not None else n_breaks,
+                       ok, eager_fps, compiled_fps, err)
     print(f"\n  Verdict: {verdict}")
-    return {"model": "mask2former", "n_graphs": n_graphs, "n_breaks": n_breaks,
+    return {"model": "mask2former",
+            "n_graphs": n_graphs, "n_breaks": n_breaks,
+            "n_breaks_with_capture_scalars": n_breaks_cs,
             "compile_ok": ok, "compile_error": err,
             "eager_fps": eager_fps, "compiled_fps": compiled_fps,
             "verdict": verdict}
@@ -323,7 +353,10 @@ def run_maskrcnn(ds_path, do_throughput, warmup, timed, limit):
     # ── 1. Graph-break analysis ────────────────────────────────────────────
     print("\n  [Step 1] Graph-break analysis (dynamo.explain) ...")
     n_graphs, n_breaks, reasons = analyse_graph_breaks(model, sample, "maskrcnn")
-    _print_breaks(n_graphs, n_breaks, reasons)
+    # Check with capture_scalar_outputs=True for Tensor.item() breaks in RoI heads.
+    n_graphs_cs, n_breaks_cs, _ = analyse_graph_breaks(
+        model, sample, "maskrcnn", capture_scalars=True)
+    _print_breaks(n_graphs, n_breaks, reasons, n_graphs_cs, n_breaks_cs)
 
     # ── 2. Compile correctness (one forward pass) ─────────────────────────
     print("\n  [Step 2] Compile correctness — one forward pass each ...")
@@ -345,9 +378,12 @@ def run_maskrcnn(ds_path, do_throughput, warmup, timed, limit):
     else:
         print("\n  [Step 3] Throughput — SKIPPED (CPU-only; re-run with --throughput on GPU VM)")
 
-    verdict = _verdict(n_breaks, ok, eager_fps, compiled_fps, err)
+    verdict = _verdict(n_breaks_cs if n_breaks_cs is not None else n_breaks,
+                       ok, eager_fps, compiled_fps, err)
     print(f"\n  Verdict: {verdict}")
-    return {"model": "maskrcnn", "n_graphs": n_graphs, "n_breaks": n_breaks,
+    return {"model": "maskrcnn",
+            "n_graphs": n_graphs, "n_breaks": n_breaks,
+            "n_breaks_with_capture_scalars": n_breaks_cs,
             "compile_ok": ok, "compile_error": err,
             "eager_fps": eager_fps, "compiled_fps": compiled_fps,
             "verdict": verdict}
@@ -355,7 +391,8 @@ def run_maskrcnn(ds_path, do_throughput, warmup, timed, limit):
 
 # ── Shared print helpers ───────────────────────────────────────────────────
 
-def _print_breaks(n_graphs, n_breaks, reasons):
+def _print_breaks(n_graphs, n_breaks, reasons, n_graphs_cs=None, n_breaks_cs=None):
+    """Print graph-break summary. Optionally show capture_scalar_outputs=True result."""
     if n_graphs is None:
         print(f"  → dynamo.explain unavailable: {reasons[0]}")
         return
@@ -365,6 +402,10 @@ def _print_breaks(n_graphs, n_breaks, reasons):
         print("  → Break reasons (first 5):")
         for r in reasons:
             print(f"      • {str(r)[:220]}")
+    if n_breaks_cs is not None and n_breaks_cs != n_breaks:
+        delta = n_breaks - n_breaks_cs
+        print(f"  → With capture_scalar_outputs=True: {n_breaks_cs} breaks "
+              f"({delta} fewer — Tensor.item() breaks resolved by that flag)")
 
 
 def _print_correctness(ok, timing, err):

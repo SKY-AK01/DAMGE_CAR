@@ -122,6 +122,15 @@ def main():
                              "Effective batch = batch * accum_steps. "
                              "With batch=2 and accum_steps=4 the optimizer sees an effective "
                              "batch of 8 without holding 8 images in VRAM simultaneously.")
+    parser.add_argument("--compile", action="store_true", default=False,
+                        help="Wrap the model with torch.compile(backend='inductor') before "
+                             "training.  capture_scalar_outputs=True is set automatically so "
+                             "that scalar-returning ops don't produce graph breaks.  "
+                             "NOTE: capture_dynamic_output_shape_ops is intentionally NOT set "
+                             "because Mask R-CNN uses dynamic shape ops (NMS, RoI Align) that "
+                             "are not yet fully supported by inductor and would cause errors. "
+                             "Expected 10-25%% throughput gain on GPU; skip on CPU.  "
+                             "Disable if you hit compile errors on a new torch/torchvision version.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -165,6 +174,21 @@ def main():
     evaluator = UnifiedEvaluator(val_json, val_images, class_names, args.output_dir)
 
     model = build_model(num_classes).to(device)
+
+    # ── torch.compile (optional, GPU-only) ───────────────────────────────────
+    # capture_scalar_outputs=True is set so that scalar-returning ops (e.g.
+    # Tensor.item() in RoI Align / loss computation) are captured inside the
+    # compiled graph rather than causing graph breaks.
+    # capture_dynamic_output_shape_ops is intentionally NOT set: Mask R-CNN
+    # uses dynamic output shape ops (NMS returns a variable number of boxes)
+    # that inductor does not yet support, and enabling that flag would cause
+    # compilation errors rather than graph breaks.
+    if args.compile and device == "cuda":
+        torch._dynamo.config.capture_scalar_outputs = True
+        model = torch.compile(model, backend="inductor")
+        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
+    elif args.compile:
+        print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
     train_ds = CocoMaskRCNNDataset(train_images, train_json)
     val_ds = CocoMaskRCNNDataset(val_images, val_json)

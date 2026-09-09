@@ -44,14 +44,19 @@ class COCOMask2FormerDataset(Dataset):
         
         self.processor = processor
         self.images_by_id = {img["id"]: img for img in self.coco_data.get("images", [])}
-        self.image_ids = list(self.images_by_id.keys())
-        
+
         self.anns_by_image = {}
         for ann in self.coco_data.get("annotations", []):
             img_id = ann["image_id"]
             if img_id not in self.anns_by_image:
                 self.anns_by_image[img_id] = []
             self.anns_by_image[img_id].append(ann)
+
+        # Only include images that have at least one annotation.
+        # Matches CocoMaskRCNNDataset behaviour and prevents the empty-image
+        # phantom-instance fallback from polluting training batches.
+        self.image_ids = [img_id for img_id in self.images_by_id
+                          if img_id in self.anns_by_image]
 
     def __len__(self):
         return len(self.image_ids)
@@ -85,9 +90,15 @@ class COCOMask2FormerDataset(Dataset):
                 instance_masks.append(m)
                 class_labels.append(cat_id)
 
+        # If all annotations decoded to zero area (degenerate polygons), we
+        # should not inject a phantom instance — that would pollute the loss
+        # with a fake cat_id=0 mask.  Instead we return empty tensors here;
+        # the model's criterion handles N=0 gracefully.
+        # Note: images with NO annotations at all are excluded in __init__,
+        # so this branch only fires for images whose annotations are all
+        # zero-area after decoding (an uncommon but valid COCO edge case).
         if len(instance_masks) == 0:
-            instance_masks = [np.zeros((h, w), dtype=np.uint8)]
-            class_labels   = [0]
+            pass  # mask_tensors / label_tensors stay empty; handled below
 
         # ── Build pixel_values / pixel_mask via processor (image only) ───────
         # We deliberately do NOT pass segmentation_maps to the processor because
@@ -115,10 +126,20 @@ class COCOMask2FormerDataset(Dataset):
             mask_tensors.append(torch.from_numpy(m_resized))
             label_tensors.append(torch.tensor(cat_id, dtype=torch.long))
 
+        # Handle the (rare) case where mask_tensors is empty — torch.stack([])
+        # raises RuntimeError.  Use zero-shaped tensors instead so the model
+        # criterion sees N=0 and skips this image's mask loss correctly.
+        if mask_tensors:
+            stacked_masks  = torch.stack(mask_tensors)   # (N, H', W')
+            stacked_labels = torch.stack(label_tensors)  # (N,)
+        else:
+            stacked_masks  = torch.zeros((0, proc_h, proc_w), dtype=torch.float32)
+            stacked_labels = torch.zeros((0,),                 dtype=torch.long)
+
         result = {
             "pixel_values": pixel_values,
-            "mask_labels":  torch.stack(mask_tensors),        # (N, H', W')
-            "class_labels": torch.stack(label_tensors),       # (N,)
+            "mask_labels":  stacked_masks,
+            "class_labels": stacked_labels,
             "image_id":     img_id,
             "orig_size":    (h, w),                           # actual image dims for post-processing
         }
@@ -175,6 +196,16 @@ def main():
                              "Effective batch = batch * accum_steps. "
                              "With batch=2 and accum_steps=4 the optimizer sees an effective "
                              "batch of 8 without holding 8 images in VRAM simultaneously.")
+    parser.add_argument("--compile", action="store_true", default=False,
+                        help="Wrap the model with torch.compile(backend='inductor') before "
+                             "training.  Benchmark (Stage 5) found 9 graph breaks in the "
+                             "default config, all caused by Tensor.item() in "
+                             "multi_scale_deformable_attention.  Setting "
+                             "capture_scalar_outputs=True (done automatically here) resolves "
+                             "all of them and gives inductor a single clean graph covering the "
+                             "full Swin backbone + decoder.  Expected 10-30%% throughput gain "
+                             "on GPU; not beneficial on CPU.  Disable if you hit compile "
+                             "errors on a new torch/transformers version.")
     args, _ = parser.parse_known_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -207,6 +238,18 @@ def main():
         ignore_mismatched_sizes=True
     )
     model.to(device)
+
+    # ── torch.compile (optional, GPU-only) ───────────────────────────────────
+    # capture_scalar_outputs=True MUST be set before compilation so that
+    # Tensor.item() calls in multi_scale_deformable_attention are captured
+    # inside the graph rather than causing graph breaks.  The Stage 5 benchmark
+    # confirmed 9 graph breaks in the default config, all resolved by this flag.
+    if args.compile and device == "cuda":
+        torch._dynamo.config.capture_scalar_outputs = True
+        model = torch.compile(model, backend="inductor")
+        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
+    elif args.compile:
+        print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
     # ── Stage-2 audit: log point-sampling config so every run is self-documenting ──
     # Per the Mask2Former paper, loss is computed on randomly sampled points rather
