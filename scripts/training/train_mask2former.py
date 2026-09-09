@@ -240,44 +240,43 @@ def main():
     model.to(device)
 
     # ── torch.compile (optional, GPU-only) ───────────────────────────────────
-    # Two issues resolved here beyond the basic compile call:
+    # Three dynamo issues specific to Mask2Former on this VM:
     #
     # 1. capture_scalar_outputs=True  — resolves 9 graph breaks in
-    #    multi_scale_deformable_attention caused by Tensor.item() calls
-    #    (confirmed by Stage 5 benchmark).
+    #    multi_scale_deformable_attention caused by Tensor.item() calls.
     #
-    # 2. scipy.optimize.linear_sum_assignment  — Mask2Former's Hungarian
-    #    matcher calls this C extension for bipartite matching in the loss.
-    #    Dynamo cannot trace through compiled C extensions and breaks the graph
-    #    at every call.  torch.compiler.allow_in_graph() tells dynamo to treat
-    #    it as an opaque leaf function instead (supported escape hatch).
+    # 2. suppress_errors=True  — two environment-level failures cause dynamo
+    #    to crash the process rather than falling back gracefully:
     #
-    # 3. onnxruntime / NumPy 2 SystemError  — on VMs where onnxruntime was
-    #    built against NumPy 1.x but NumPy 2.x is installed, dynamo's lazy
-    #    backend registration crashes with SystemError when it tries to import
-    #    onnxruntime.  We catch that at compile time and fall back to eager so
-    #    training continues uninterrupted.  Fix the environment with:
-    #    pip install --upgrade onnxruntime  (rebuilds against current NumPy)
+    #    a) onnxruntime built against NumPy 1.x fails to import under NumPy 2.x
+    #       with SystemError("__ARRAY_API not found") during dynamo's lazy
+    #       backend registration.  This fires on the FIRST FORWARD PASS, not at
+    #       torch.compile() call time, so try/except around torch.compile() does
+    #       not help.  Permanent fix: pip install --upgrade onnxruntime-gpu
+    #
+    #    b) linear_sum_assignment (Mask2Former's Hungarian matcher) is a compiled
+    #       C extension that dynamo partially inlines.  When it reaches the
+    #       .numpy() call inside it, it fails with:
+    #       "TorchRuntimeError: .numpy() is not supported for tensor subclasses"
+    #       allow_in_graph() does NOT prevent inlining for partially-traceable
+    #       C extensions — suppress_errors is the correct escape hatch here.
+    #
+    #    suppress_errors=True tells dynamo to silently fall back to eager for any
+    #    subgraph that fails compilation.  The backbone and decoder still get
+    #    compiled; only the criterion (loss) runs in eager.  This is a net win
+    #    over no compile at all.
+    #
+    #    Once onnxruntime is upgraded (pip install --upgrade onnxruntime-gpu),
+    #    the onnxrt crash disappears and suppress_errors becomes a belt-and-
+    #    suspenders safety net rather than the primary workaround.
     if args.compile and device == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
-
-        # Register scipy's Hungarian matcher as an opaque leaf so dynamo
-        # doesn't break the graph at every loss computation.
-        try:
-            import scipy.optimize
-            torch.compiler.allow_in_graph(scipy.optimize.linear_sum_assignment)
-            print("[OK] scipy.optimize.linear_sum_assignment registered as allow_in_graph")
-        except Exception as _e:
-            print(f"[WARN] Could not register scipy.optimize.linear_sum_assignment: {_e}")
-
-        try:
-            model = torch.compile(model, backend="inductor")
-            print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
-        except SystemError as _e:
-            # onnxruntime built against NumPy 1.x crashes dynamo backend
-            # registration on NumPy 2.x environments.  Fall back to eager.
-            print(f"[WARNING] torch.compile failed (likely onnxruntime/NumPy mismatch): {_e}")
-            print("[WARNING] Falling back to eager mode. Fix with: pip install --upgrade onnxruntime")
+        torch._dynamo.config.suppress_errors = True
+        model = torch.compile(model, backend="inductor")
+        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True, suppress_errors=True)")
+        print("     Note: suppress_errors=True means dynamo falls back to eager for any")
+        print("     subgraph that cannot be compiled (criterion/loss runs in eager mode).")
+        print("     To resolve permanently: pip install --upgrade onnxruntime-gpu")
     elif args.compile:
         print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
