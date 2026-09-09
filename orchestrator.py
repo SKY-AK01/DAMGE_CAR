@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 orchestrator.py -- Interactive Pipeline Orchestrator in Python.
 
@@ -99,8 +99,9 @@ def collect_models():
     print("  6) MaskDINO only")
     print("  7) SegFormer only")
     print("  8) ALL Instance Segmentation Models (Auto-Generates Excel Comparison)")
+    print("  9) YOLO11m + Mask2Former + Fast R-CNN  (Recommended Trio — Excel Comparison)")
     print("======================================================================")
-    choice = prompt("Enter choice [1-8] (default 8): ") or "8"
+    choice = prompt("Enter choice [1-9] (default 8): ") or "8"
     mapping = {
         "1": ModelSelection(yolo=True),
         "2": ModelSelection(yolo11x=True),
@@ -110,6 +111,7 @@ def collect_models():
         "6": ModelSelection(maskdino=True),
         "7": ModelSelection(segformer=True),
         "8": ModelSelection(yolo=True, yolo11x=True, maskrcnn=True, mask2former=True, sam2=True, maskdino=True, segformer=True),
+        "9": ModelSelection(yolo=True, fastrcnn=True, mask2former=True),
     }
     return mapping.get(choice, ModelSelection(yolo=True, yolo11x=True, maskrcnn=True, mask2former=True, sam2=True, maskdino=True, segformer=True))
 
@@ -1021,58 +1023,236 @@ def main():
         generate_excel_report(base_out_dir)
 
     elif choice == "3":
-        print("\n[TASK] Inference on Test Images")
+        import json as _json
+
+        # ── helpers ──────────────────────────────────────────────────────────
+        def _read_best_metrics(metrics_files):
+            """Return (best_map50_mask, best_epoch, metrics_dict) from a list of per-epoch JSON files."""
+            best_map = -1.0
+            best_ep  = None
+            best_m   = {}
+            for mf in sorted(metrics_files):
+                try:
+                    with open(mf) as fh:
+                        d = _json.load(fh)
+                    v = d.get("val_metrics", {})
+                    m50 = v.get("map50_mask", v.get("map50_box", 0.0)) or 0.0
+                    ep  = d.get("epoch", "?")
+                    if m50 >= best_map:
+                        best_map, best_ep, best_m = m50, ep, d
+                except Exception:
+                    pass
+            return best_map, best_ep, best_m
+
+        def _scan_model_candidates():
+            """Scan runs_comparison and return a dict keyed by model_type.
+            Each value is a list of dicts:
+              {run_id, weights_path, best_map50, best_epoch, train_loss, epochs_done}
+            sorted best-first (highest mAP@50-mask first).
+            """
+            runs_dir = PROJECT_ROOT / "runs_comparison"
+            candidates = {"yolo": [], "maskrcnn": [], "mask2former": []}
+
+            if not runs_dir.exists():
+                return candidates
+
+            # ── YOLO ─────────────────────────────────────────────────────────
+            for pt in sorted(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt")):
+                run_id = pt.parts[pt.parts.index("runs_comparison") + 1]
+                # YOLO results.csv lives 2 levels up from weights/
+                results_csv = pt.parent.parent / "results.csv"
+                best_map = 0.0
+                epochs_done = "?"
+                train_loss  = "?"
+                if results_csv.exists():
+                    try:
+                        import csv as _csv
+                        rows = list(_csv.DictReader(open(results_csv)))
+                        if rows:
+                            epochs_done = len(rows)
+                            # header keys vary: try common names
+                            for row in rows:
+                                for k, v in row.items():
+                                    if "mask_map50" in k.lower().replace(" ", "") or "metrics/maskmap50" in k.lower().replace(" ", ""):
+                                        try:
+                                            val = float(v.strip())
+                                            best_map = max(best_map, val)
+                                        except Exception:
+                                            pass
+                    except Exception:
+                        pass
+                candidates["yolo"].append({
+                    "run_id": run_id, "weights_path": str(pt),
+                    "best_map50": best_map, "best_epoch": epochs_done,
+                    "train_loss": train_loss, "epochs_done": epochs_done,
+                })
+            # also flat (non-run) pattern
+            for pt in sorted(runs_dir.glob("yolo11*-seg/*/weights/best.pt")):
+                candidates["yolo"].append({
+                    "run_id": pt.parent.parent.parent.name,
+                    "weights_path": str(pt),
+                    "best_map50": 0.0, "best_epoch": "?", "train_loss": "?", "epochs_done": "?",
+                })
+            candidates["yolo"].sort(key=lambda x: x["best_map50"], reverse=True)
+
+            # ── Mask R-CNN ────────────────────────────────────────────────────
+            for pt in sorted(runs_dir.glob("run_*/maskrcnn/best_model.pt")):
+                run_id   = pt.parts[pt.parts.index("runs_comparison") + 1]
+                model_dir = pt.parent
+                mfiles = sorted(model_dir.glob("metrics_epoch_*.json"))
+                best_map, best_ep, best_m = _read_best_metrics(mfiles)
+                ep_done  = len(mfiles) if mfiles else "?"
+                tl = best_m.get("train_stats", {}).get("train_loss", "?")
+                tl = f"{tl:.4f}" if isinstance(tl, float) else str(tl)
+                candidates["maskrcnn"].append({
+                    "run_id": run_id, "weights_path": str(pt),
+                    "best_map50": best_map, "best_epoch": best_ep,
+                    "train_loss": tl, "epochs_done": ep_done,
+                })
+            # flat pattern (e.g. runs_comparison/maskrcnn/best_model.pt)
+            for pt in sorted(runs_dir.glob("maskrcnn/best_model.pt")):
+                model_dir = pt.parent
+                mfiles = sorted(model_dir.glob("metrics_epoch_*.json"))
+                best_map, best_ep, best_m = _read_best_metrics(mfiles)
+                ep_done  = len(mfiles) if mfiles else "?"
+                tl = best_m.get("train_stats", {}).get("train_loss", "?")
+                tl = f"{tl:.4f}" if isinstance(tl, float) else str(tl)
+                candidates["maskrcnn"].append({
+                    "run_id": "maskrcnn (standalone)", "weights_path": str(pt),
+                    "best_map50": best_map, "best_epoch": best_ep,
+                    "train_loss": tl, "epochs_done": ep_done,
+                })
+            candidates["maskrcnn"].sort(key=lambda x: x["best_map50"], reverse=True)
+
+            # ── Mask2Former ───────────────────────────────────────────────────
+            for wdir in sorted(runs_dir.glob("run_*/mask2former/*/weights/best")):
+                if not (wdir / "model.safetensors").exists():
+                    continue
+                run_id    = wdir.parts[wdir.parts.index("runs_comparison") + 1]
+                exp_dir   = wdir.parent.parent        # e.g. mask2former_combined_carparts
+                mfiles    = sorted(exp_dir.glob("metrics_epoch_*.json"))
+                best_map, best_ep, best_m = _read_best_metrics(mfiles)
+                ep_done   = len(mfiles) if mfiles else "?"
+                tl = best_m.get("train_stats", {}).get("train_loss", "?")
+                tl = f"{tl:.4f}" if isinstance(tl, float) else str(tl)
+                candidates["mask2former"].append({
+                    "run_id": run_id, "weights_path": str(wdir),
+                    "best_map50": best_map, "best_epoch": best_ep,
+                    "train_loss": tl, "epochs_done": ep_done,
+                })
+            # legacy flat pattern
+            for wdir in sorted(runs_dir.glob("run_*/mask2former/best_model")):
+                if not any(wdir.iterdir()):
+                    continue
+                run_id = wdir.parts[wdir.parts.index("runs_comparison") + 1]
+                candidates["mask2former"].append({
+                    "run_id": run_id, "weights_path": str(wdir),
+                    "best_map50": 0.0, "best_epoch": "?", "train_loss": "?", "epochs_done": "?",
+                })
+            candidates["mask2former"].sort(key=lambda x: x["best_map50"], reverse=True)
+
+            return candidates
+
+        def _print_model_table(model_type, entries):
+            """Print a nicely formatted table for one model type."""
+            bar = "─" * 90
+            print(f"\n  ┌{bar}┐")
+            label = {"yolo": "YOLO", "maskrcnn": "Mask R-CNN", "mask2former": "Mask2Former"}.get(model_type, model_type)
+            print(f"  │  {label:<88}│")
+            print(f"  ├{'─'*4}┬{'─'*22}┬{'─'*14}┬{'─'*12}┬{'─'*13}┬{'─'*21}┤")
+            print(f"  │ #  │ {'Run ID':<20} │ {'mAP@50-mask':<12} │ {'Best Epoch':<10} │ {'Train Loss':<11} │ {'Weights Path (short)':<19} │")
+            print(f"  ├{'─'*4}┼{'─'*22}┼{'─'*14}┼{'─'*12}┼{'─'*13}┼{'─'*21}┤")
+            for i, e in enumerate(entries, 1):
+                rid  = e["run_id"][-20:]
+                m50  = f"{e['best_map50']:.4f}" if isinstance(e["best_map50"], float) else str(e["best_map50"])
+                ep   = str(e["best_epoch"])[:10]
+                tl   = str(e["train_loss"])[:11]
+                wp   = ("..." + e["weights_path"][-18:]) if len(e["weights_path"]) > 21 else e["weights_path"]
+                star = " ★" if i == 1 else "  "
+                print(f"  │{star}{i:<2}│ {rid:<20} │ {m50:<12} │ {ep:<10} │ {tl:<11} │ {wp:<19} │")
+            print(f"  └{'─'*4}┴{'─'*22}┴{'─'*14}┴{'─'*12}┴{'─'*13}┴{'─'*21}┘")
+
+        def _pick_weights(model_type, entries):
+            """Return chosen weights path (str) or None to skip."""
+            label = {"yolo": "YOLO", "maskrcnn": "Mask R-CNN", "mask2former": "Mask2Former"}.get(model_type, model_type)
+            if not entries:
+                print(f"  [skip] No {label} weights found in any run → skipping {label}")
+                return None
+            _print_model_table(model_type, entries)
+            print(f"  ★ = auto-recommended (highest mAP@50-mask)")
+            print(f"  Enter number to pick a run, or press ENTER to use ★ recommended, or 's' to skip {label}:")
+            while True:
+                raw = input("  > ").strip().lower()
+                if raw == "":
+                    chosen = entries[0]
+                    print(f"  [✓] Using: {chosen['run_id']}  ({chosen['weights_path']})")
+                    return chosen["weights_path"]
+                if raw == "s":
+                    print(f"  [skip] Skipping {label}")
+                    return None
+                if raw.isdigit():
+                    idx = int(raw) - 1
+                    if 0 <= idx < len(entries):
+                        chosen = entries[idx]
+                        print(f"  [✓] Using: {chosen['run_id']}  ({chosen['weights_path']})")
+                        return chosen["weights_path"]
+                print(f"  Invalid input. Enter 1-{len(entries)}, ENTER for best, or 's' to skip.")
+
+        # ── Main logic for choice 3 ───────────────────────────────────────────
+        print("\n" + "=" * 92)
+        print("  [TASK] Inference on Test Images — Smart Model Picker")
+        print("=" * 92)
         inp = prompt_default("Test images directory", "./test")
         out = prompt_default("Output directory", "./test_result")
-        
-        # Find most recent weights for each model
-        runs_dir = PROJECT_ROOT / "runs_comparison"
-        
-        # YOLO weights - search for most recent
-        yolo_weights = None
-        if runs_dir.exists():
-            yolo_files = list(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt"))
-            if not yolo_files:
-                yolo_files = list(runs_dir.glob("run_*/yolo11*-seg/weights/best.pt"))
-            if yolo_files:
-                yolo_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                yolo_weights = str(yolo_files[0])
-                print(f"[*] Found YOLO weights: {yolo_weights}")
-        
-        # Mask2Former weights - search for most recent
-        m2f_weights = None
-        if runs_dir.exists():
-            m2f_dirs = list(runs_dir.glob("run_*/mask2former/best_model"))
-            if m2f_dirs:
-                m2f_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                m2f_weights = str(m2f_dirs[0])
-                print(f"[*] Found Mask2Former weights: {m2f_weights}")
-        
-        # Mask R-CNN weights - search for most recent
-        mrcnn_weights = None
-        if runs_dir.exists():
-            mrcnn_files = list(runs_dir.glob("run_*/maskrcnn/best_model.pt"))
-            if mrcnn_files:
-                mrcnn_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-                mrcnn_weights = str(mrcnn_files[0])
-                print(f"[*] Found Mask R-CNN weights: {mrcnn_weights}")
-        
-        save_run_config(logs_dir, "Inference", dataset="N/A",
-                        extra={"input_dir": inp, "output_dir": out,
-                               "yolo_weights": yolo_weights, "mask2former_weights": m2f_weights,
-                               "maskrcnn_weights": mrcnn_weights})
-        log_path = os.path.join(logs_dir, "01_inference.log")
-        cmd = ["python", "scripts/inference/infer_both_models.py", "--input", inp, "--output", out]
-        
-        # Pass weights explicitly if found
-        if yolo_weights:
-            cmd.extend(["--yolo_weights", yolo_weights])
-        if m2f_weights:
-            cmd.extend(["--mask2former_weights", m2f_weights])
-        if mrcnn_weights:
-            cmd.extend(["--maskrcnn_weights", mrcnn_weights])
-        
-        run_cmd_and_log(cmd, log_path, "inference")
+
+        print("\n[*] Scanning runs_comparison for trained models ...")
+        candidates = _scan_model_candidates()
+
+        total_found = sum(len(v) for v in candidates.values())
+        if total_found == 0:
+            print("\n[ERROR] No trained model weights found in runs_comparison/")
+            print("        Please run option 2 (Train Model Locally) first.")
+        else:
+            print(f"\n[*] Found weights across runs:")
+            for mtype, elist in candidates.items():
+                lbl = {"yolo": "YOLO", "maskrcnn": "Mask R-CNN", "mask2former": "Mask2Former"}[mtype]
+                print(f"      {lbl:<14}: {len(elist)} run(s)")
+
+            print("\n[*] For each model, select which run's weights to use for inference:")
+
+            yolo_weights   = _pick_weights("yolo",        candidates["yolo"])
+            mrcnn_weights  = _pick_weights("maskrcnn",    candidates["maskrcnn"])
+            m2f_weights    = _pick_weights("mask2former", candidates["mask2former"])
+
+            if not any([yolo_weights, mrcnn_weights, m2f_weights]):
+                print("\n[WARN] All models skipped — nothing to run.")
+            else:
+                save_run_config(logs_dir, "Inference", dataset="N/A",
+                                extra={"input_dir": inp, "output_dir": out,
+                                       "yolo_weights": yolo_weights,
+                                       "mask2former_weights": m2f_weights,
+                                       "maskrcnn_weights": mrcnn_weights})
+                log_path = os.path.join(logs_dir, "01_inference.log")
+                cmd = ["python", "scripts/inference/infer_both_models.py",
+                       "--input", inp, "--output", out]
+
+                if yolo_weights:
+                    cmd.extend(["--yolo_weights", yolo_weights])
+                else:
+                    cmd.append("--skip_yolo")
+
+                if m2f_weights:
+                    cmd.extend(["--mask2former_weights", m2f_weights])
+                else:
+                    cmd.append("--skip_mask2former")
+
+                if mrcnn_weights:
+                    cmd.extend(["--maskrcnn_weights", mrcnn_weights])
+                else:
+                    cmd.append("--skip_maskrcnn")
+
+                print(f"\n[*] Running inference with selected models ...")
+                run_cmd_and_log(cmd, log_path, "inference")
 
     elif choice == "4":
         print("\n[TASK] Full Pipeline (Prep -> Train -> Evaluate)")

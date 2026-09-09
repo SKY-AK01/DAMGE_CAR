@@ -492,8 +492,10 @@ def main():
 
         should_stop, is_best = logger.log_epoch(epoch, args.epochs, train_stats, val_metrics)
         if is_best:
+            best_dir = os.path.join(args.output_dir, run_name, "weights", "best")
             os.makedirs(os.path.join(args.output_dir, run_name, "weights"), exist_ok=True)
-            model.save_pretrained(os.path.join(args.output_dir, run_name, "weights", "best"))
+            model.save_pretrained(best_dir)
+            processor.save_pretrained(best_dir)  # saves preprocessor_config.json needed for inference
 
         if should_stop:
             print("[!] Early stopping triggered.")

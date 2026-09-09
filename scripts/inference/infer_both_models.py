@@ -173,7 +173,22 @@ def run_mask2former(input_dir, output_dir, weights_path, class_names, conf):
     print("=" * 60)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[*] Loading Mask2Former weights from {weights_path} (device: {device}) ...")
-    processor = Mask2FormerImageProcessor.from_pretrained(weights_path)
+    # Load processor: try local dir first (new runs), fall back to HF base model (old runs
+    # where processor was not saved alongside the model weights).
+    _M2F_BASE_MODEL = "facebook/mask2former-swin-tiny-coco-instance"
+    _proc_config = os.path.join(weights_path, "preprocessor_config.json")
+    if os.path.exists(_proc_config):
+        processor = Mask2FormerImageProcessor.from_pretrained(weights_path)
+    else:
+        print(f"[!] preprocessor_config.json not found in weights dir — falling back to base model processor ({_M2F_BASE_MODEL})")
+        print(f"    (Tip: re-train to auto-save the processor, or copy preprocessor_config.json into the weights dir)")
+        processor = Mask2FormerImageProcessor.from_pretrained(_M2F_BASE_MODEL)
+        # Also save it into the weights dir so future runs don't need the fallback
+        try:
+            processor.save_pretrained(weights_path)
+            print(f"[*] Saved preprocessor_config.json → {weights_path}")
+        except Exception as _e:
+            print(f"[!] Could not save processor to weights dir: {_e}")
     model = Mask2FormerForUniversalSegmentation.from_pretrained(weights_path).to(device).eval()
 
     overlay_dir = os.path.join(output_dir, "annotated_images")
