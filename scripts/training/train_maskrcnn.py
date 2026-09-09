@@ -183,10 +183,26 @@ def main():
     # uses dynamic output shape ops (NMS returns a variable number of boxes)
     # that inductor does not yet support, and enabling that flag would cause
     # compilation errors rather than graph breaks.
+    #
+    # suppress_errors=True — GeneralizedRCNN.transform uses torch_choice() to
+    # pick a random resize value, which produces a data-dependent integer index
+    # (TruncToInt(zuf0)).  Dynamo cannot specialize a list index whose value is
+    # not known at trace time and raises GuardOnDataDependentSymNode.  This is
+    # fundamentally untraceable — suppress_errors lets dynamo fall back to eager
+    # for that subgraph (the transform/resize) while still compiling the FPN
+    # backbone and RoI heads, which gives most of the speedup.
+    #
+    # cache_size_limit=64 — the val loop switches grad_mode (train→eval), which
+    # looks like a new graph signature.  Default limit of 8 fills up across
+    # train/val transitions; 64 gives headroom for all variants.
     if args.compile and device == "cuda":
         torch._dynamo.config.capture_scalar_outputs = True
+        torch._dynamo.config.suppress_errors = True
+        torch._dynamo.config.cache_size_limit = 64
         model = torch.compile(model, backend="inductor")
-        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True)")
+        print("[OK] torch.compile enabled (inductor backend, capture_scalar_outputs=True, suppress_errors=True, cache_size_limit=64)")
+        print("     Note: GeneralizedRCNN.transform random-resize is untraceable by dynamo;")
+        print("     suppress_errors=True means that subgraph runs in eager, rest compiles.")
     elif args.compile:
         print("[WARNING] --compile requested but device is CPU — skipping torch.compile")
 
