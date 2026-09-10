@@ -482,11 +482,14 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
         matched_cs = datasets_dir / "matched" / "carparts-seg"
         matched_dsmlr = datasets_dir / "matched" / "dsmlr"
         
-        # Check if carparts-seg needs matching (has external source AND matched dir is empty)
-        if (datasets_dir / "external" / "carparts-seg").exists():
+        # Check if carparts-seg needs matching (has external source with actual images AND matched dir is empty)
+        carparts_ext_images = list((datasets_dir / "external" / "carparts-seg").rglob("*.jpg")) if (datasets_dir / "external" / "carparts-seg").exists() else []
+        if len(carparts_ext_images) > 100:  # real dataset has 3833 images
             matched_cs_populated = (matched_cs / "images").exists() and any((matched_cs / "images").rglob("*.*"))
             if not matched_cs_populated:
                 run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
+        elif (datasets_dir / "external" / "carparts-seg").exists():
+            print(f"[WARN] external/carparts-seg has only {len(carparts_ext_images)} images — expected ~3833. Download may have failed.")
         
         # Check if dsmlr needs matching (has external source AND matched dir is empty)
         if (datasets_dir / "external" / "dsmlr").exists():
@@ -497,6 +500,19 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
         print("[*] Skipping external datasets (user choice: RAW_DATASET only)")
 
     # Step 4: Combine datasets (with selected sources)
+    # Print source summary so the user can catch missing data before the long combine step
+    print("\n[*] Dataset sources ready for combining:")
+    for src_name, src_path in [
+        ("raw",              datasets_dir / "raw"),
+        ("carparts-seg",     datasets_dir / "matched" / "carparts-seg"),
+        ("dsmlr",            datasets_dir / "matched" / "dsmlr"),
+    ]:
+        if src_path.exists():
+            n = len(list(src_path.rglob("*.jpg"))) + len(list(src_path.rglob("*.png")))
+            print(f"    {src_name:<20}: {n} images")
+        else:
+            print(f"    {src_name:<20}: NOT FOUND (will be skipped)")
+
     print("\n[*] Rebuilding combined_carparts from selected sources...")
     cmd = ["python", "scripts/data/combine_datasets.py"]
     if not use_raw:
