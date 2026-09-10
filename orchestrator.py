@@ -438,10 +438,18 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
         # Step 3: Match taxonomy
         matched_cs = datasets_dir / "matched" / "carparts-seg"
         matched_dsmlr = datasets_dir / "matched" / "dsmlr"
-        if not (matched_cs / "images").exists() and (datasets_dir / "external" / "carparts-seg").exists():
-            run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
-        if not (matched_dsmlr / "images").exists() and (datasets_dir / "external" / "dsmlr").exists():
-            run_cmd_and_log(["python", "scripts/data/match_dsmlr.py"], log_path, "match_dsmlr")
+        
+        # Check if carparts-seg needs matching (has external source AND matched dir is empty)
+        if (datasets_dir / "external" / "carparts-seg").exists():
+            matched_cs_populated = (matched_cs / "images").exists() and any((matched_cs / "images").rglob("*.*"))
+            if not matched_cs_populated:
+                run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
+        
+        # Check if dsmlr needs matching (has external source AND matched dir is empty)
+        if (datasets_dir / "external" / "dsmlr").exists():
+            matched_dsmlr_populated = (matched_dsmlr / "images").exists() and any((matched_dsmlr / "images").rglob("*.*"))
+            if not matched_dsmlr_populated:
+                run_cmd_and_log(["python", "scripts/data/match_dsmlr.py"], log_path, "match_dsmlr")
     else:
         print("[*] Skipping external datasets (user choice: RAW_DATASET only)")
 

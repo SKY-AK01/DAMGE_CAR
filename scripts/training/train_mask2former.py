@@ -391,6 +391,9 @@ def main():
         start_time = time.time()
         running_loss = 0.0
         optimizer.zero_grad(set_to_none=True)  # reset at epoch start
+        num_images = 0
+        
+        print(f"\n[Epoch {epoch}/{args.epochs}] Training...")
 
         for batch_idx, batch in enumerate(train_loader):
             if args.max_batches and batch_idx >= args.max_batches:
@@ -398,6 +401,14 @@ def main():
             pixel_values = batch["pixel_values"].to(device)
             mask_labels  = [m.to(device) for m in batch["mask_labels"]]
             class_labels = [c.to(device) for c in batch["class_labels"]]
+            num_images += len(pixel_values)
+            
+            # Print progress every 10 batches
+            if (batch_idx + 1) % 10 == 0 or (batch_idx + 1) == len(train_loader):
+                progress = (batch_idx + 1) / len(train_loader) * 100
+                avg_loss = running_loss / max(1, batch_idx + 1)
+                print(f"  Batch {batch_idx + 1}/{len(train_loader)} ({progress:.1f}%) | Loss: {avg_loss:.4f}")
+                sys.stdout.flush()  # Force output to appear immediately
 
             with torch.amp.autocast("cuda", enabled=use_amp):
                 outputs = model(
@@ -432,6 +443,13 @@ def main():
 
         epoch_time = time.time() - start_time
         avg_train_loss = running_loss / max(len(train_loader), 1)
+        images_sec = num_images / epoch_time if epoch_time > 0 else 0
+        
+        print(f"\n[Epoch {epoch}/{args.epochs}] Complete:")
+        print(f"  Train Loss: {avg_train_loss:.4f}")
+        print(f"  Time: {epoch_time:.1f}s | {images_sec:.2f} img/s")
+        print(f"  GPU Memory: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+        sys.stdout.flush()
 
         # Evaluation
         val_metrics = None
