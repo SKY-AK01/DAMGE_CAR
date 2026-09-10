@@ -491,15 +491,27 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
         # Check if carparts-seg needs matching
         if use_external:
             carparts_ext = datasets_dir / "external" / "carparts-seg"
-            carparts_ext_ok = carparts_ext.exists() and any(carparts_ext.rglob("*.jpg"))
-            if carparts_ext_ok:
-                matched_cs_populated = (matched_cs / "images").exists() and any((matched_cs / "images").rglob("*.*"))
+            # Use case-insensitive glob patterns and check multiple extensions
+            def _count_images(path):
+                if not path.exists():
+                    return 0
+                count = 0
+                for ext in ["*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.png", "*.PNG"]:
+                    count += len(list(path.rglob(ext)))
+                    if count > 0:
+                        break  # found some, no need to check more
+                return count
+
+            n_ext_images = _count_images(carparts_ext)
+            print(f"[*] external/carparts-seg image count: {n_ext_images}")            if n_ext_images > 100:
+                matched_cs_populated = (matched_cs / "images").exists() and _count_images(matched_cs / "images") > 0
                 if not matched_cs_populated:
                     run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
                 else:
-                    print("[SKIP] matched/carparts-seg already populated.")
+                    n_matched = _count_images(matched_cs / "images")
+                    print(f"[SKIP] matched/carparts-seg already populated ({n_matched} images).")
             else:
-                print("[WARN] external/carparts-seg has no images — skipping match_carparts_seg.")
+                print(f"[WARN] external/carparts-seg has only {n_ext_images} images — expected ~3833.")
 
         # Check if dsmlr needs matching (has external source AND matched dir is empty)
         if (datasets_dir / "external" / "dsmlr").exists():
