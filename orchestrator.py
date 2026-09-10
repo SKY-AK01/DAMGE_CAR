@@ -433,29 +433,35 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
                 urllib.request.urlretrieve(zip_url, zip_file, reporthook=_reporthook)
                 print(f"    Downloaded: {zip_file} ({zip_file.stat().st_size // 1024 // 1024} MB)")
 
-                # Extract
-                print(f"    Extracting to {datasets_dir} ...")
+                # Extract into a temp dir to avoid interactive overwrite prompts
+                # (Python's zipfile module never asks — unlike the unzip CLI)
+                temp_dir = datasets_dir / "_carparts_seg_extract_tmp"
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir)
+                temp_dir.mkdir(parents=True)
+
+                print(f"    Extracting to {temp_dir} ...")
                 with zipfile.ZipFile(zip_file, "r") as zf:
-                    zf.extractall(datasets_dir)
+                    zf.extractall(temp_dir)
                 zip_file.unlink(missing_ok=True)
 
-                # Verify extracted folder exists
-                extracted = datasets_dir / "carparts-seg"
+                # The zip contains a top-level carparts-seg/ folder
+                extracted = temp_dir / "carparts-seg"
                 if not extracted.exists():
-                    # Some zips extract into a subfolder — find it
-                    candidates = [d for d in datasets_dir.iterdir() if d.is_dir() and "carparts" in d.name.lower() and d != carparts_ext]
-                    if candidates:
-                        extracted = candidates[0]
-                        print(f"    Found extracted folder: {extracted}")
+                    # Fallback: find any subdirectory
+                    candidates = [d for d in temp_dir.iterdir() if d.is_dir()]
+                    extracted = candidates[0] if candidates else temp_dir
 
-                if extracted.exists():
-                    print(f"    Moving {extracted.name} -> datasets/external/carparts-seg/ ...")
-                    carparts_ext.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(extracted), str(carparts_ext))
-                    print(f"    [OK] datasets/external/carparts-seg/ ready ({len(list(carparts_ext.rglob('*.*')))} files)")
-                else:
-                    print(f"    [WARN] Could not find extracted carparts-seg folder in {datasets_dir}")
-                    run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+                # Move to final destination
+                print(f"    Moving to datasets/external/carparts-seg/ ...")
+                carparts_ext.parent.mkdir(parents=True, exist_ok=True)
+                if carparts_ext.exists():
+                    shutil.rmtree(carparts_ext)
+                shutil.move(str(extracted), str(carparts_ext))
+                shutil.rmtree(temp_dir, ignore_errors=True)
+
+                n_imgs = len(list(carparts_ext.rglob("*.jpg"))) + len(list(carparts_ext.rglob("*.png")))
+                print(f"    [OK] datasets/external/carparts-seg/ ready ({n_imgs} images)")
 
             except Exception as e:
                 print(f"[WARN] Could not auto-download carparts-seg: {e}")
