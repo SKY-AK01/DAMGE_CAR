@@ -410,20 +410,57 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
     # Step 2: External datasets (carparts-seg, DSMLR) (only if selected)
     if use_external:
         carparts_ext = datasets_dir / "external" / "carparts-seg"
-        if not carparts_ext.exists() or not any(carparts_ext.iterdir()):
+        # Check if it has actual images (not just empty scaffold dirs created by setup_structure)
+        def _has_images(path):
+            if not path.exists():
+                return False
+            return any(path.rglob("*.jpg")) or any(path.rglob("*.jpeg")) or any(path.rglob("*.png"))
+        if not _has_images(carparts_ext):
             print("\n[*] datasets/external/carparts-seg/ not found — downloading from Ultralytics...")
             try:
-                import urllib.request, zipfile
+                import urllib.request, zipfile, shutil
                 zip_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/carparts-seg.zip"
                 zip_file = datasets_dir / "carparts-seg.zip"
-                urllib.request.urlretrieve(zip_url, zip_file)
-                extract_target = datasets_dir / "carparts-seg"
+
+                # Download with progress output
+                def _reporthook(count, block_size, total_size):
+                    if total_size > 0:
+                        pct = min(count * block_size * 100 // total_size, 100)
+                        if pct % 10 == 0:
+                            print(f"    Downloading carparts-seg.zip ... {pct}%", flush=True)
+
+                print(f"    URL: {zip_url}")
+                urllib.request.urlretrieve(zip_url, zip_file, reporthook=_reporthook)
+                print(f"    Downloaded: {zip_file} ({zip_file.stat().st_size // 1024 // 1024} MB)")
+
+                # Extract
+                print(f"    Extracting to {datasets_dir} ...")
                 with zipfile.ZipFile(zip_file, "r") as zf:
                     zf.extractall(datasets_dir)
                 zip_file.unlink(missing_ok=True)
-                run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+
+                # Verify extracted folder exists
+                extracted = datasets_dir / "carparts-seg"
+                if not extracted.exists():
+                    # Some zips extract into a subfolder — find it
+                    candidates = [d for d in datasets_dir.iterdir() if d.is_dir() and "carparts" in d.name.lower() and d != carparts_ext]
+                    if candidates:
+                        extracted = candidates[0]
+                        print(f"    Found extracted folder: {extracted}")
+
+                if extracted.exists():
+                    print(f"    Moving {extracted.name} -> datasets/external/carparts-seg/ ...")
+                    carparts_ext.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(extracted), str(carparts_ext))
+                    print(f"    [OK] datasets/external/carparts-seg/ ready ({len(list(carparts_ext.rglob('*.*')))} files)")
+                else:
+                    print(f"    [WARN] Could not find extracted carparts-seg folder in {datasets_dir}")
+                    run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+
             except Exception as e:
                 print(f"[WARN] Could not auto-download carparts-seg: {e}")
+                import traceback
+                traceback.print_exc()
 
         dsmlr_ext = datasets_dir / "external" / "dsmlr"
         if not dsmlr_ext.exists() or not any(dsmlr_ext.iterdir()):
