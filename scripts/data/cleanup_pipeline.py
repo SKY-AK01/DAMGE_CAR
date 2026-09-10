@@ -37,17 +37,18 @@ Q1_TARGETS = [
     (DATASETS / "combined_carparts",   "Rebuilt every run — stale data risk"),
     (DATASETS / "matched",             "Rebuilt by matcher scripts from external/"),
     (DATASETS / "external",            "Re-downloaded/re-copied from original sources"),
+    (DATASETS / "carparts-seg",        "Legacy external dataset — re-downloaded when needed"),
+    (DATASETS / "custom_carparts",     "Legacy dataset — re-copied from RAW_DATASET when needed"),
+    (DATASETS / "dsmlr-carparts",      "Raw DSMLR git clone — re-cloned when needed"),
+    (DATASETS / "dsmlr-carparts-split","Legacy DSMLR split — regenerated when needed"),
     (PROJECT_ROOT / "runs_comparison", "Training run outputs (logs, weights, metrics CSVs)"),
     (PROJECT_ROOT / "logs",            "Pipeline log files and pipeline reports"),
+    (PROJECT_ROOT / "archive",         "Old training run archives"),
 ]
 
 # ── Always-protected paths (never asked about, never deleted) ─────────────────
 ALWAYS_PROTECTED = [
-    DATASETS / "carparts-seg",         # legacy location — safe to keep
-    DATASETS / "custom_carparts",      # legacy location — safe to keep
-    DATASETS / "dsmlr-carparts",       # raw DSMLR git clone
-    DATASETS / "dsmlr-carparts-split", # legacy split — safe to keep
-    PROJECT_ROOT / "RAW_DATASET",
+    PROJECT_ROOT / "RAW_DATASET",      # Your hand-annotated source data — IRREPLACEABLE
 ]
 
 
@@ -122,9 +123,9 @@ def main():
     present_q1 = [(p, r) for p, r in q1_targets if p.exists()]
 
     print()
-    print("  [Q1] Delete old run outputs, logs, and derived dataset artifacts?")
-    print("       (runs_comparison/, logs/, combined_carparts/, matched/, external/)")
-    print("       These are rebuilt fresh every run. Default: No")
+    print("  [Q1] Delete old run outputs, logs, and ALL derived dataset artifacts?")
+    print("       (runs_comparison/, logs/, archive/, datasets/* EXCEPT RAW_DATASET/)")
+    print("       These are rebuilt/re-downloaded fresh every run. Default: No")
     print()
     if present_q1:
         print("       Will remove:")
