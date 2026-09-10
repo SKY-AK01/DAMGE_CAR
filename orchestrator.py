@@ -718,8 +718,16 @@ def main():
         f.write(f"Run started at {datetime.datetime.now()}\n")
         f.write(f"Project root: {PROJECT_ROOT}\n")
 
+    def log_selection(label, value):
+        """Write user selection to orchestrator.log and print it."""
+        msg = f"[USER SELECTION] {label}: {value}"
+        print(msg)
+        with open(os.path.join(logs_dir, "orchestrator.log"), "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+
     display_main_menu()
     choice = prompt("Enter choice [1-10]: ")
+    log_selection("Main Menu", f"Option {choice}")
 
     if choice == "1":
         print("\n[TASK] Train Models Locally (Dataset Prep -> Train -> Eval -> Compare)")
@@ -727,6 +735,21 @@ def main():
         hparams = Hyperparams(models)
         # Ask user which dataset sources to use
         use_raw, use_external = prompt_dataset_sources()
+
+        # Log all user selections
+        model_list = []
+        if models.yolo: model_list.append("yolo11m-seg")
+        if models.maskrcnn: model_list.append("maskrcnn")
+        if models.mask2former: model_list.append("mask2former")
+        log_selection("Models selected", ", ".join(model_list) if model_list else "none")
+        log_selection("Dataset sources", f"use_raw={use_raw}, use_external={use_external}")
+        if models.yolo:
+            log_selection("YOLO hyperparams", f"epochs={hparams.yolo_epochs}, batch={hparams.yolo_batch}, workers={hparams.yolo_workers}")
+        if models.maskrcnn:
+            log_selection("MaskRCNN hyperparams", f"epochs={hparams.mrcnn_epochs}, batch={hparams.mrcnn_batch}, workers={hparams.mrcnn_workers}, accum={hparams.mrcnn_accum_steps}")
+        if models.mask2former:
+            log_selection("Mask2Former hyperparams", f"epochs={hparams.m2f_epochs}, batch={hparams.m2f_batch}, workers={hparams.m2f_workers}, accum={hparams.m2f_accum_steps}")
+
         dataset = ensure_and_prepare_datasets(logs_dir, use_raw, use_external)
         run_config_path = save_run_config(logs_dir, "Train Models Locally", dataset, models, hparams)
         _generate_report(run_config_path, logs_dir)
