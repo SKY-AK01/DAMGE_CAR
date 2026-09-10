@@ -110,6 +110,7 @@ def combine(out_dir: Path = OUT_DIR, num_workers: int = 8, use_raw: bool = True,
 
         print(f"[*] Scanning {source_label} ({dp}) ...")
         count = 0
+        labels_found = 0  # Track how many label files we find
 
         for split in ["train", "val", "test"]:
             img_dir = dp / "images" / split
@@ -126,11 +127,19 @@ def combine(out_dir: Path = OUT_DIR, num_workers: int = 8, use_raw: bool = True,
                 for f in sorted(lbl_dir.glob("*.txt")):
                     dst = out_dir / "labels" / split / f"{source_label}_{f.name}"
                     copy_jobs.append((f, dst))
+                    labels_found += 1
             elif img_dir.exists():
                 # Fallback: labels mixed into image dir (uncommon but safe)
                 for f in sorted(img_dir.glob("*.txt")):
                     dst = out_dir / "labels" / split / f"{source_label}_{f.name}"
                     copy_jobs.append((f, dst))
+                    labels_found += 1
+
+        if count > 0 and labels_found == 0:
+            print(f"  [WARN] {source_label}: Found {count} images but 0 label files!")
+            print(f"         Expected labels in: {dp}/labels/{{train,val}}/")
+        elif labels_found > 0:
+            print(f"  [OK] {source_label}: {count} images, {labels_found} labels")
 
         # Inherit names block from first source that has a YAML
         if not yaml_names_lines:

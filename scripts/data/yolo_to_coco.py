@@ -98,6 +98,10 @@ def convert_split(images_dir, labels_dir, class_names, out_json_path, num_worker
     images_dir = Path(images_dir)
     labels_dir = Path(labels_dir)
 
+    if not labels_dir.exists():
+        print(f"[ERROR] Labels directory not found: {labels_dir}")
+        return
+
     image_files = sorted([
         f for f in images_dir.glob("*")
         if f.suffix.lower() in (".jpg", ".jpeg", ".png")
@@ -120,11 +124,14 @@ def convert_split(images_dir, labels_dir, class_names, out_json_path, num_worker
         "categories": [{"id": i, "name": name} for i, name in enumerate(class_names)],
     }
     ann_id = 0
+    images_with_labels = 0
     for entry in results:
         if entry is None:
             continue
         img_id, file_name, w, h, annotations = entry
         coco["images"].append({"id": img_id, "file_name": file_name, "width": w, "height": h})
+        if annotations:
+            images_with_labels += 1
         for class_id, seg_points, bbox, area in annotations:
             coco["annotations"].append({
                 "id": ann_id, "image_id": img_id, "category_id": class_id,
@@ -135,7 +142,13 @@ def convert_split(images_dir, labels_dir, class_names, out_json_path, num_worker
     with open(out_json_path, "w") as f:
         json.dump(coco, f)
 
-    print(f"[OK] {out_json_path} -- {len(coco['images'])} images, {len(coco['annotations'])} annotations")
+    if len(coco['annotations']) == 0:
+        print(f"[ERROR] {out_json_path} -- {len(coco['images'])} images, 0 annotations")
+        print(f"         Check that labels/ directory exists and contains .txt files with valid YOLO polygon format!")
+        print(f"         Labels dir: {labels_dir}")
+        print(f"         Images with labels: {images_with_labels}/{len(coco['images'])}")
+    else:
+        print(f"[OK] {out_json_path} -- {len(coco['images'])} images, {len(coco['annotations'])} annotations")
 
 
 def main():
