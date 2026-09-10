@@ -367,15 +367,21 @@ def prompt_dataset_sources():
     print("======================================================================")
     print("  1) RAW_DATASET only (your custom annotated data)")
     print("  2) External datasets only (carparts-seg + dsmlr from GitHub)")
-    print("  3) BOTH (RAW_DATASET + External datasets) [Recommended]")
+    print("  3) BOTH (RAW_DATASET + External datasets) [DEFAULT - RECOMMENDED]")
     print("======================================================================")
-    choice = prompt("Enter choice [1-3] (default 3): ") or "3"
-    
+    print("  NOTE: Selecting BOTH gives ~5689 images vs ~1455 for RAW only")
+    print("        External datasets are cached — no re-download if already present")
+    print("======================================================================")
+    choice = prompt("Enter choice [1-3] (press Enter for 3 - BOTH): ") or "3"
+
     if choice == "1":
+        print("  [Selected] RAW_DATASET only (1,455 images)")
         return True, False
     elif choice == "2":
+        print("  [Selected] External datasets only")
         return False, True
     else:  # choice == "3" or default
+        print("  [Selected] BOTH datasets (~5,689 images)")
         return True, True
 
 
