@@ -80,7 +80,7 @@ def migrate_raw():
             # Label
             src_lbl = src_root / "labels" / chosen_split / (chosen_img.stem + ".txt")
             if src_lbl.exists():
-                dst_lbl = dst_root / "labels_yolo" / chosen_split / src_lbl.name
+                dst_lbl = dst_root / "labels" / chosen_split / src_lbl.name
                 copy_file(src_lbl, dst_lbl)
 
             kept += 1
@@ -96,7 +96,7 @@ def migrate_raw():
     # Verify counts
     for split in ["train", "val"]:
         n_img = len(list((dst_root / "images" / split).glob("*.*")))
-        n_lbl = len(list((dst_root / "labels_yolo" / split).glob("*.txt")))
+        n_lbl = len(list((dst_root / "labels" / split).glob("*.txt")))
         print(f"     {split}: {n_img} images, {n_lbl} label files")
 
 
