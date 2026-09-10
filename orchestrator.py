@@ -489,30 +489,34 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
         matched_dsmlr = datasets_dir / "matched" / "dsmlr"
 
         # Check if carparts-seg needs matching
-        if use_external:
-            carparts_ext = datasets_dir / "external" / "carparts-seg"
-            # Use case-insensitive glob patterns and check multiple extensions
-            def _count_images(path):
-                if not path.exists():
-                    return 0
-                count = 0
-                for ext in ["*.jpg", "*.JPG", "*.jpeg", "*.JPEG", "*.png", "*.PNG"]:
-                    count += len(list(path.rglob(ext)))
-                    if count > 0:
-                        break  # found some, no need to check more
-                return count
+        carparts_ext = datasets_dir / "external" / "carparts-seg"
+        try:
+            # Fast image count using os.walk — avoids slow rglob on large dirs
+            n_ext_cs = sum(
+                1 for _, _, files in os.walk(carparts_ext)
+                for f in files if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            )
+            print(f"[*] external/carparts-seg: {n_ext_cs} images found")
+        except Exception as e:
+            n_ext_cs = 0
+            print(f"[WARN] Could not count external/carparts-seg images: {e}")
 
-            n_ext_images = _count_images(carparts_ext)
-            print(f"[*] external/carparts-seg image count: {n_ext_images}")
-            if n_ext_images > 100:
-                matched_cs_populated = (matched_cs / "images").exists() and _count_images(matched_cs / "images") > 0
-                if not matched_cs_populated:
-                    run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
-                else:
-                    n_matched = _count_images(matched_cs / "images")
-                    print(f"[SKIP] matched/carparts-seg already populated ({n_matched} images).")
+        if n_ext_cs > 100:
+            try:
+                n_matched_cs = sum(
+                    1 for _, _, files in os.walk(matched_cs / "images")
+                    for f in files if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                ) if (matched_cs / "images").exists() else 0
+                print(f"[*] matched/carparts-seg: {n_matched_cs} images found")
+            except Exception:
+                n_matched_cs = 0
+
+            if n_matched_cs == 0:
+                run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
             else:
-                print(f"[WARN] external/carparts-seg has only {n_ext_images} images — expected ~3833.")
+                print(f"[SKIP] matched/carparts-seg already populated ({n_matched_cs} images).")
+        elif use_external:
+            print(f"[WARN] external/carparts-seg has only {n_ext_cs} images — expected ~3833. Download may have failed.")
 
         # Check if dsmlr needs matching (has external source AND matched dir is empty)
         if (datasets_dir / "external" / "dsmlr").exists():
