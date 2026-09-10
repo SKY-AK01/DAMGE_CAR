@@ -127,7 +127,8 @@ def main():
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--cache", default="none", choices=["ram", "disk", "none"])  # none=fast when dataset is on local SSD
     parser.add_argument("--dataset", default="combined_carparts", help="Dataset name or path to dataset directory.")
-    parser.add_argument("--project", default="runs_comparison")
+    parser.add_argument("--project", default=None, help="Legacy: root folder for runs")
+    parser.add_argument("--output_dir", default=None, help="Target output directory (e.g. runs_comparison/yolo11m-seg or runs_comparison/run_.../yolo11m-seg)")
     parser.add_argument("--max_batches", type=int, default=None, help="Max batches to train for quick capacity testing.")
     parser.add_argument("--val_interval", type=int, default=5,
                         help="Run unified COCO eval every N epochs (default: 5). "
@@ -144,15 +145,21 @@ def main():
 
     data_yaml = make_yaml(args.dataset)
 
-    # Use an ABSOLUTE project path. Ultralytics silently nests relative project
-    # paths under its own default "runs/<task>/" directory in some versions,
-    # which previously produced the confusing
-    # "runs/segment/runs_comparison/..." path. Absolute paths avoid that entirely.
-    project = os.path.abspath(args.project)
-    # Use clean name -- never include dataset path (e.g. './dataset') in run_name
-    # or YOLO saves its outputs INSIDE ./dataset/ and Azure ML re-uploads all 17k images!
-    ds_label = Path(args.dataset).name if Path(args.dataset).is_dir() else args.dataset
-    run_name = f"{args.model}_{ds_label}"
+    # Standardize output directory: direct destination with no redundant nested folders
+    if args.output_dir:
+        out_path = Path(args.output_dir).resolve()
+        project = str(out_path.parent)
+        run_name = out_path.name
+    elif args.project:
+        out_path = Path(args.project).resolve()
+        project = str(out_path.parent)
+        run_name = out_path.name
+    else:
+        project = str(PROJECT_ROOT / "runs_comparison")
+        run_name = "yolo11m-seg"
+
+    target_out_dir = os.path.join(project, run_name)
+    os.makedirs(target_out_dir, exist_ok=True)
 
     # `model + .pt` auto-downloads the pretrained checkpoint from Ultralytics on first use
     model = YOLO(f"{args.model}.pt")
@@ -183,13 +190,12 @@ def main():
         val_json   = str(PROJECT_ROOT / "datasets" / "dsmlr-carparts-split" / "annotations" / "instances_val.json")
         val_images = str(PROJECT_ROOT / "datasets" / "dsmlr-carparts-split" / "images" / "val")
 
-
     with open(train_json) as f:
         class_names = [c["name"] for c in json.load(f)["categories"]]
 
-    logger = UnifiedLogger(os.path.join(project, run_name), "yolo11m-seg")
+    logger = UnifiedLogger(target_out_dir, args.model)
     logger.print_dataset_health(train_json, val_json)
-    evaluator = UnifiedEvaluator(val_json, val_images, class_names, os.path.join(project, run_name))
+    evaluator = UnifiedEvaluator(val_json, val_images, class_names, target_out_dir)
 
     def custom_eval_callback(trainer):
         epoch = trainer.epoch + 1
@@ -299,8 +305,8 @@ def main():
     metrics = model.val(
         data=data_yaml,
         split=eval_split,
-        project=project,
-        name=f"{run_name}_{eval_split}_eval",
+        project=target_out_dir,
+        name="eval",
         exist_ok=True,
         plots=True,
     )

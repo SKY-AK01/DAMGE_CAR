@@ -337,14 +337,10 @@ def _default_yolo_weights():
     # Search for the most recent YOLO weights in runs_comparison
     runs_dir = Path("runs_comparison")
     if runs_dir.exists():
-        # Find all best.pt files in yolo11m-seg or yolo11x-seg subdirectories
-        weight_files = list(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt"))
+        # Find all best.pt files in yolo11m-seg subdirectories
+        weight_files = list(runs_dir.glob("**/yolo11m-seg*/weights/best.pt")) + list(runs_dir.glob("**/yolo11m-seg*/best.pt"))
         if not weight_files:
-            # Try alternate structure: run_*/yolo11*-seg/weights/best.pt
-            weight_files = list(runs_dir.glob("run_*/yolo11*-seg/weights/best.pt"))
-        if not weight_files:
-            # Try without run_ prefix
-            weight_files = list(runs_dir.glob("yolo11*-seg/*/weights/best.pt"))
+            weight_files = list(runs_dir.glob("run_*/yolo11*-seg/*/weights/best.pt"))
         
         if weight_files:
             # Sort by modification time, return most recent
@@ -352,41 +348,36 @@ def _default_yolo_weights():
             return str(weight_files[0])
     
     # Final fallback
-    return "runs_comparison/yolo11m-seg_carparts-seg/weights/best.pt"
+    return "runs_comparison/yolo11m-seg/weights/best.pt"
 
 
 def _default_mask2former_weights():
     """Find the most recent Mask2Former weights directory."""
     runs_dir = Path("runs_comparison")
     if runs_dir.exists():
-        # Look for best_model directories
-        model_dirs = list(runs_dir.glob("run_*/mask2former/best_model"))
+        model_dirs = [p.parent for p in runs_dir.glob("**/mask2former*/weights/best/model.safetensors")]
         if not model_dirs:
-            model_dirs = list(runs_dir.glob("mask2former/best_model"))
+            model_dirs = [p.parent for p in runs_dir.glob("**/mask2former*/best_model/model.safetensors")]
+        if not model_dirs:
+            model_dirs = list(runs_dir.glob("**/mask2former*/weights/best")) + list(runs_dir.glob("**/mask2former*/best_model"))
         
         if model_dirs:
-            # Sort by modification time, return most recent
             model_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             return str(model_dirs[0])
     
-    return "runs_comparison/mask2former/best_model"
+    return "runs_comparison/mask2former/weights/best"
 
 
 def _default_maskrcnn_weights():
     """Find the most recent Mask R-CNN weights file."""
     runs_dir = Path("runs_comparison")
     if runs_dir.exists():
-        # Look for best_model.pt files
-        weight_files = list(runs_dir.glob("run_*/maskrcnn/best_model.pt"))
-        if not weight_files:
-            weight_files = list(runs_dir.glob("maskrcnn/best_model.pt"))
-        
+        weight_files = list(runs_dir.glob("**/maskrcnn*/weights/best.pt")) + list(runs_dir.glob("**/maskrcnn*/best_model.pt"))
         if weight_files:
-            # Sort by modification time, return most recent
             weight_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             return str(weight_files[0])
     
-    return "runs_comparison/maskrcnn/best_model.pt"
+    return "runs_comparison/maskrcnn/weights/best.pt"
 
 
 def main():

@@ -32,7 +32,7 @@ WATCH_PAIRS = [
     ("left_mirror", "right_mirror"),
 ]
 
-MODELS = ["yolo", "maskrcnn", "mask2former", "oneformer", "maskdino"]
+MODELS = ["yolo", "maskrcnn", "mask2former"]
 
 
 def overall_accuracy(matrix):
@@ -58,7 +58,7 @@ def mixup_rate(matrix, class_names, a, b):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", required=True, choices=["carparts-seg", "dsmlr-carparts", "custom_carparts"])
+    parser.add_argument("--dataset", default="combined_carparts", help="Dataset name (default: combined_carparts)")
     args = parser.parse_args()
 
     matrix_dir = Path("runs_comparison/confusion_matrices")

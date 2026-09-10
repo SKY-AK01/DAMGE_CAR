@@ -375,12 +375,12 @@ def main():
     # (mirrors train_maskrcnn.py which fixed NaN/overflow with float() casting)
     use_amp = device == "cuda"
     scaler  = torch.amp.GradScaler("cuda", enabled=use_amp)
-    print(f"[OK] AMP (mixed precision): {'enabled' if use_amp else 'disabled (CPU)'}")
+    target_out_dir = Path(args.output_dir).resolve()
+    os.makedirs(target_out_dir, exist_ok=True)
 
-    run_name = f"mask2former_{ds_path.name if ds_path.is_dir() else args.dataset}"
-    logger = UnifiedLogger(os.path.join(args.output_dir, run_name), "mask2former")
+    logger = UnifiedLogger(str(target_out_dir), "mask2former")
     logger.print_dataset_health(str(train_json), str(val_json))
-    evaluator = UnifiedEvaluator(str(val_json), str(val_images), class_names, os.path.join(args.output_dir, run_name))
+    evaluator = UnifiedEvaluator(str(val_json), str(val_images), class_names, str(target_out_dir))
 
     print(f"[*] Starting Mask2Former Training for {args.epochs} epochs...")
 
@@ -491,11 +491,21 @@ def main():
         }
 
         should_stop, is_best = logger.log_epoch(epoch, args.epochs, train_stats, val_metrics)
+        
+        weights_dir = target_out_dir / "weights"
+        os.makedirs(weights_dir, exist_ok=True)
+        last_dir = weights_dir / "last"
+        model.save_pretrained(str(last_dir))
+        processor.save_pretrained(str(last_dir))
+
         if is_best:
-            best_dir = os.path.join(args.output_dir, run_name, "weights", "best")
-            os.makedirs(os.path.join(args.output_dir, run_name, "weights"), exist_ok=True)
-            model.save_pretrained(best_dir)
-            processor.save_pretrained(best_dir)  # saves preprocessor_config.json needed for inference
+            best_dir = weights_dir / "best"
+            model.save_pretrained(str(best_dir))
+            processor.save_pretrained(str(best_dir))  # saves preprocessor_config.json needed for inference
+            # Also legacy best_model location for backward compat
+            legacy_best = target_out_dir / "best_model"
+            model.save_pretrained(str(legacy_best))
+            processor.save_pretrained(str(legacy_best))
 
         if should_stop:
             print("[!] Early stopping triggered.")

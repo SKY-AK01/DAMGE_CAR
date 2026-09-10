@@ -30,8 +30,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="GPU Capacity and Batch Size Stress Tester")
     parser.add_argument("--dataset", default="./datasets/combined_carparts",
                         help="Path to dataset directory (default: ./datasets/combined_carparts)")
-    parser.add_argument("--models", nargs="+", default=["yolo11m-seg", "yolo11x-seg", "maskrcnn", "mask2former", "sam2", "maskdino", "segformer"],
-                        choices=["yolo11m-seg", "yolo11x-seg", "maskrcnn", "mask2former", "sam2", "maskdino", "segformer"], help="Models to test")
+    parser.add_argument("--models", nargs="+", default=["yolo11m-seg", "maskrcnn", "mask2former"],
+                        choices=["yolo11m-seg", "maskrcnn", "mask2former"], help="Models to test")
     parser.add_argument("--batch-list", nargs="+", type=int, default=[2, 4, 8, 16, 32, 64],
                         help="Batch sizes to test sequentially")
     parser.add_argument("--workers-list", nargs="+", type=int, default=[4, 8, 16],
@@ -71,8 +71,7 @@ def get_dataset_image_count(dataset_path):
         except Exception:
             pass
 
-    all_imgs = [f for f in path.glob("**/*") if f.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]]
-    return len(all_imgs) if len(all_imgs) > 0 else 100
+    return 1000  # fallback estimation if path parsing fails
 
 class GPUMonitor:
     """
@@ -132,8 +131,6 @@ def is_oom_error(output_text):
     return any(phrase in lower for phrase in exact_oom_phrases)
 
 def cleanup_gpu():
-    import gc
-    gc.collect()
     try:
         import torch
         if torch.cuda.is_available():
@@ -163,12 +160,12 @@ def build_training_cmd(model_name, dataset, batch, workers, quick=True):
         ds_path = (PROJECT_ROOT / ds_path).resolve()
     ds_str = str(ds_path)
 
-    if model_name in ["yolo11m-seg", "yolo11x-seg"]:
+    if model_name == "yolo11m-seg":
         cmd = ["python", "scripts/training/train_yolo_seg.py",
-                "--model", model_name, "--dataset", ds_str,
+                "--model", "yolo11m-seg", "--dataset", ds_str,
                 "--epochs", "1", "--batch", str(batch), "--workers", str(workers),
                 "--cache", "none",
-                "--project", "runs_comparison/capacity_test"]
+                "--output_dir", "runs_comparison/capacity_test/yolo11m-seg"]
     elif model_name == "maskrcnn":
         cmd = ["python", "scripts/training/train_maskrcnn.py",
                 "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
@@ -180,21 +177,6 @@ def build_training_cmd(model_name, dataset, batch, workers, quick=True):
                 "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
                 "--num_workers", str(workers),
                 "--output_dir", "runs_comparison/capacity_test/mask2former"]
-    elif model_name == "sam2":
-        cmd = ["python", "scripts/training/train_sam2_seg.py",
-                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers),
-                "--output_dir", "runs_comparison/capacity_test/sam2"]
-    elif model_name == "maskdino":
-        cmd = ["python", "scripts/training/train_maskdino.py",
-                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers),
-                "--output_dir", "runs_comparison/capacity_test/maskdino"]
-    elif model_name == "segformer":
-        cmd = ["python", "scripts/training/train_segformer.py",
-                "--dataset", ds_str, "--epochs", "1", "--batch", str(batch),
-                "--num_workers", str(workers),
-                "--output_dir", "runs_comparison/capacity_test/segformer"]
 
     if quick and cmd:
         cmd.extend(["--max_batches", "10"])

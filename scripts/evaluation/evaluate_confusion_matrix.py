@@ -301,36 +301,42 @@ def plot_confusion_matrix(matrix, class_names, out_path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, choices=["yolo", "mask2former", "oneformer", "maskdino", "maskrcnn"])
+    parser.add_argument("--model", required=True, choices=["yolo", "mask2former", "maskrcnn"])
     parser.add_argument("--weights", required=True)
-    parser.add_argument("--config", help="Required for maskdino (path to its .yaml config)")
-    parser.add_argument("--dataset", required=True, choices=["carparts-seg", "dsmlr-carparts", "custom_carparts"])
+    parser.add_argument("--dataset", default="combined_carparts", help="Dataset name or path (default: combined_carparts)")
     args = parser.parse_args()
 
     class_names = CARPARTS_SEG_CLASSES
-    if args.dataset in ["carparts-seg", "custom_carparts"]:
-        test_images_dir = f"datasets/{args.dataset}/images/test"
-        test_json = f"datasets/{args.dataset}/coco_test.json"
-        if not Path(test_json).exists():
-            test_images_dir = f"datasets/{args.dataset}/images/val"
-            test_json = f"datasets/{args.dataset}/coco_val.json"
+    ds_path = Path(args.dataset)
+    if ds_path.is_dir():
+        base = ds_path
     else:
-        test_images_dir = "datasets/dsmlr-carparts-split/images/test"
-        test_json = "datasets/dsmlr-carparts-split/annotations/instances_test.json"
+        base = PROJECT_ROOT / "datasets" / args.dataset
+
+    if (base / "coco_test.json").exists():
+        test_images_dir = str(base / "images" / "test")
+        test_json = str(base / "coco_test.json")
+    elif (base / "coco_val.json").exists():
+        test_images_dir = str(base / "images" / "val")
+        test_json = str(base / "coco_val.json")
+    elif (base / "annotations" / "instances_test.json").exists():
+        test_images_dir = str(base / "images" / "test")
+        test_json = str(base / "annotations" / "instances_test.json")
+    else:
+        test_images_dir = str(base / "images" / "val")
+        test_json = str(base / "annotations" / "instances_val.json")
+
+    if Path(test_json).exists():
         with open(test_json) as f:
-            class_names = [c["name"] for c in json.load(f)["categories"]]
+            cats = json.load(f).get("categories", [])
+            if cats:
+                class_names = [c["name"] for c in cats]
 
     print(f"[*] Running inference with {args.model} on {args.dataset} test set ...")
     if args.model == "yolo":
         preds = get_predictions_yolo(args.weights, test_images_dir, class_names)
     elif args.model == "mask2former":
         preds = get_predictions_mask2former(args.weights, test_images_dir, test_json, class_names)
-    elif args.model == "oneformer":
-        preds = get_predictions_oneformer(args.weights, test_images_dir, test_json, class_names)
-    elif args.model == "maskdino":
-        if not args.config:
-            raise ValueError("--config is required for maskdino evaluation")
-        preds = get_predictions_maskdino(args.weights, args.config, test_images_dir, test_json, class_names)
     elif args.model == "maskrcnn":
         preds = get_predictions_maskrcnn(args.weights, test_images_dir, test_json, class_names)
 

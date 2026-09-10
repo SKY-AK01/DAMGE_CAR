@@ -23,10 +23,21 @@ logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 
-from azure.ai.ml import MLClient, command, Input
-from azure.ai.ml.entities import Data, Environment, BuildContext
-from azure.ai.ml.constants import AssetTypes, InputOutputModes
-from azure.identity import DefaultAzureCredential
+try:
+    from azure.ai.ml import MLClient, command, Input
+    from azure.ai.ml.entities import Data, Environment, BuildContext
+    from azure.ai.ml.constants import AssetTypes, InputOutputModes
+    from azure.identity import DefaultAzureCredential
+except ImportError:
+    MLClient = None
+    command = None
+    Input = None
+    Data = None
+    Environment = None
+    BuildContext = None
+    AssetTypes = None
+    InputOutputModes = None
+    DefaultAzureCredential = None
 
 
 # Load Azure connection details (but NOT hyperparameters)
@@ -243,7 +254,7 @@ def prepare_clean_code_snapshot():
 def main():
     parser = argparse.ArgumentParser(description="Submit training job to Azure ML.")
     # Arguments MUST be provided (no defaults/reading from .env)
-    parser.add_argument("--model", required=True, choices=["yolo11m-seg", "yolo11x-seg", "maskrcnn", "mask2former", "sam2", "maskdino", "segformer", "capacity_check", "all"], help="Model type to train.")
+    parser.add_argument("--model", required=True, choices=["yolo11m-seg", "maskrcnn", "mask2former", "capacity_check", "all"], help="Model type to train.")
     parser.add_argument("--local_dataset_dir", required=True, help="Path to the local dataset directory.")
     parser.add_argument("--epochs", type=int, required=True, help="Number of training epochs.")
     parser.add_argument("--batch", type=int, required=True, help="Batch size.")
@@ -276,38 +287,27 @@ def main():
         command_string = f"{copy_cmd} && python scripts/training/capacity_check.py --dataset ./dataset --mode local"
     elif args.model == "all":
         yolo_b = args.batch if (args.batch > 0 and args.batch <= 16) else 8
-        cmd_yolo11m = f"python scripts/training/train_yolo_seg.py --model yolo11m-seg --dataset ./dataset --epochs {args.epochs} --batch {yolo_b} --workers {args.workers} --project outputs/yolo11m-seg"
-        cmd_yolo11x = f"python scripts/training/train_yolo_seg.py --model yolo11x-seg --dataset ./dataset --epochs {args.epochs} --batch {yolo_b} --workers {args.workers} --project outputs/yolo11x-seg"
+        cmd_yolo11m = f"python scripts/training/train_yolo_seg.py --model yolo11m-seg --dataset ./dataset --epochs {args.epochs} --batch {yolo_b} --workers {args.workers} --output_dir outputs/yolo11m-seg"
         cmd_mrcnn = f"python scripts/training/train_maskrcnn.py --dataset ./dataset --epochs {args.epochs} --batch 2 --num_workers {args.workers} --output_dir outputs/maskrcnn"
         cmd_m2f = f"python scripts/training/train_mask2former.py --dataset ./dataset --epochs {args.epochs} --batch 2 --num_workers {args.workers} --output_dir outputs/mask2former"
-        cmd_sam2 = f"python scripts/training/train_sam2_seg.py --dataset ./dataset --epochs {args.epochs} --batch 2 --num_workers {args.workers} --output_dir outputs/sam2_finetuned"
-        cmd_maskdino = f"python scripts/training/train_maskdino.py --dataset ./dataset --epochs {args.epochs} --batch 2 --num_workers {args.workers} --output_dir outputs/maskdino"
-        cmd_segformer = f"python scripts/training/train_segformer.py --dataset ./dataset --epochs {args.epochs} --batch 4 --num_workers {args.workers} --output_dir outputs/segformer"
 
-        command_string = f"{copy_cmd} && {cmd_yolo11m} && {cmd_yolo11x} && {cmd_mrcnn} && {cmd_m2f} && {cmd_sam2} && {cmd_maskdino} && {cmd_segformer} && {cmd_export}"
+        command_string = f"{copy_cmd} && {cmd_yolo11m} && {cmd_mrcnn} && {cmd_m2f} && {cmd_export}"
 
-    elif args.model in ["yolo11m-seg", "yolo11x-seg", "yolov9e-seg"]:
-        script_name = "train_yolo_seg.py"
+    elif args.model == "yolo11m-seg":
         command_string = (
             f"{copy_cmd} && "
-            f"python scripts/training/{script_name} "
-            f"--model {args.model} "
+            f"python scripts/training/train_yolo_seg.py "
+            f"--model yolo11m-seg "
             f"--dataset ./dataset "
             f"--epochs {args.epochs} "
             f"--batch {args.batch} "
             f"--workers {args.workers} "
-            f"--project outputs && {cmd_export}"
+            f"--output_dir outputs/yolo11m-seg && {cmd_export}"
         )
     elif args.model == "maskrcnn":
-        command_string = f"{copy_cmd} && python scripts/training/train_maskrcnn.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs && {cmd_export}"
+        command_string = f"{copy_cmd} && python scripts/training/train_maskrcnn.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs/maskrcnn && {cmd_export}"
     elif args.model == "mask2former":
-        command_string = f"{copy_cmd} && python scripts/training/train_mask2former.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs && {cmd_export}"
-    elif args.model == "sam2":
-        command_string = f"{copy_cmd} && python scripts/training/train_sam2_seg.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs && {cmd_export}"
-    elif args.model == "maskdino":
-        command_string = f"{copy_cmd} && python scripts/training/train_maskdino.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs && {cmd_export}"
-    elif args.model == "segformer":
-        command_string = f"{copy_cmd} && python scripts/training/train_segformer.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs && {cmd_export}"
+        command_string = f"{copy_cmd} && python scripts/training/train_mask2former.py --dataset ./dataset --epochs {args.epochs} --batch {args.batch} --num_workers {args.workers} --output_dir outputs/mask2former && {cmd_export}"
 
     # 5. Create the job display name
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")

@@ -4,13 +4,15 @@
 #
 # Prompts the user to select the pipeline task:
 #   1) Annotate Images (Grounding DINO + SAM 2 auto-annotation)
-#   2) Train Model (Prepare datasets + Train YOLO / Mask2Former / Mask R-CNN + Evaluate)
+#   2) Train Model (Prepare datasets + Train YOLO / Mask R-CNN / Mask2Former + Evaluate)
 #   3) Test on Trained Model (Inference using trained models)
+#   4) Run Full Pipeline (Dataset Prep + Training + Evaluation + Comparison)
+#   5) Exit
 # ==============================================================================
 set -e
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_DIR="logs/run_${TIMESTAMP}"
+LOG_DIR="runs_comparison/run_${TIMESTAMP}/logs"
 mkdir -p "$LOG_DIR"
 
 # Warn if on Azure's temp disk
@@ -64,22 +66,13 @@ display_menu() {
     echo " Select the task you want to perform:"
     echo ""
     echo "  1) Annotate Images       - Create auto-annotations for dataset (DINO + SAM2)"
-    echo "  2) Train Model           - Prepare dataset & train models (YOLO / Mask R-CNN)"
+    echo "  2) Train Model           - Prepare dataset & train models (YOLO / Mask R-CNN / Mask2Former)"
     echo "  3) Test on Trained Model - Run inference on test images using trained models"
     echo "  4) Run Full Pipeline     - Execute Dataset Prep + Training + Evaluation"
     echo "  5) Exit"
     echo "======================================================================"
 }
 
-# ------------------------------------------------------------------------
-# ask_hparams <model_label> <default_epochs> <default_batch> <default_workers>
-# Prompts once per model for epochs/batch/workers, falling back to the
-# given defaults on empty input (just hit Enter to accept the default).
-# Sets globals: HP_EPOCHS, HP_BATCH, HP_WORKERS
-# so you can lower/raise these per model/per run without editing any
-# script — handy if a run OOMs, or if you want to push batch size up
-# after checking `nvidia-smi` shows headroom.
-# ------------------------------------------------------------------------
 ask_hparams() {
     local model_label="$1"
     local default_epochs="$2"
@@ -97,44 +90,32 @@ ask_hparams() {
     echo "  -> ${model_label}: epochs=${HP_EPOCHS} batch=${HP_BATCH} workers=${HP_WORKERS}"
 }
 
-# Collects hyperparams for all 3 models up front (asked once before any
-# training starts, so you don't have to babysit the terminal mid-pipeline).
-# Defaults here match the values already tuned per-model in the training
-# scripts themselves (see the GPU UTILIZATION FIX comments in each file).
-
-
 collect_models() {
     echo ""
     echo "======================================================================"
     echo " Select models to train"
     echo "======================================================================"
-    echo "  1) YOLO only"
+    echo "  1) YOLOv11m-seg only"
     echo "  2) Mask R-CNN only"
-    echo "  3) Fast R-CNN only"
-    echo "  4) YOLO + Mask R-CNN"
-    echo "  5) YOLO + Fast R-CNN"
-    echo "  6) Mask R-CNN + Fast R-CNN"
-    echo "  7) All models"
+    echo "  3) Mask2Former only"
+    echo "  4) ALL 3 Models (YOLO11m + Mask R-CNN + Mask2Former)"
     echo "======================================================================"
 
-    read -p "Enter choice [1-7]: " MODEL_CHOICE
+    read -p "Enter choice [1-4] (default 4): " MODEL_CHOICE
+    MODEL_CHOICE=${MODEL_CHOICE:-4}
 
     ENABLE_YOLO=0
     ENABLE_MASKRCNN=0
-    ENABLE_FASTRCNN=0
+    ENABLE_MASK2FORMER=0
 
     case "$MODEL_CHOICE" in
         1) ENABLE_YOLO=1 ;;
         2) ENABLE_MASKRCNN=1 ;;
-        3) ENABLE_FASTRCNN=1 ;;
-        4) ENABLE_YOLO=1; ENABLE_MASKRCNN=1 ;;
-        5) ENABLE_YOLO=1; ENABLE_FASTRCNN=1 ;;
-        6) ENABLE_MASKRCNN=1; ENABLE_FASTRCNN=1 ;;
-        7) ENABLE_YOLO=1; ENABLE_MASKRCNN=1; ENABLE_FASTRCNN=1 ;;
+        3) ENABLE_MASK2FORMER=1 ;;
+        4) ENABLE_YOLO=1; ENABLE_MASKRCNN=1; ENABLE_MASK2FORMER=1 ;;
         *) echo "[ERROR] Invalid choice"; exit 1 ;;
     esac
 }
-
 
 collect_training_hparams() {
     echo ""
@@ -142,21 +123,20 @@ collect_training_hparams() {
     echo " Set training hyperparameters (press Enter to accept each default)"
     echo "======================================================================"
 
-    ask_hparams "YOLOv11m-seg"  1 -1 16
-    YOLO_EPOCHS=$HP_EPOCHS; YOLO_BATCH=$HP_BATCH; YOLO_WORKERS=$HP_WORKERS
+    if [ "$ENABLE_YOLO" -eq 1 ]; then
+        ask_hparams "YOLOv11m-seg"  50 -1 8
+        YOLO_EPOCHS=$HP_EPOCHS; YOLO_BATCH=$HP_BATCH; YOLO_WORKERS=$HP_WORKERS
+    fi
 
-    ask_hparams "Mask R-CNN"    1 2  8
-    MRCNN_EPOCHS=$HP_EPOCHS; MRCNN_BATCH=$HP_BATCH; MRCNN_WORKERS=$HP_WORKERS
+    if [ "$ENABLE_MASKRCNN" -eq 1 ]; then
+        ask_hparams "Mask R-CNN"    20 2  4
+        MRCNN_EPOCHS=$HP_EPOCHS; MRCNN_BATCH=$HP_BATCH; MRCNN_WORKERS=$HP_WORKERS
+    fi
 
-    ask_hparams "Fast R-CNN"    1 4  8
-    FASTRCNN_EPOCHS=$HP_EPOCHS; FASTRCNN_BATCH=$HP_BATCH; FASTRCNN_WORKERS=$HP_WORKERS
-
-    echo ""
-    echo "---- Summary ----"
-    echo "  YOLOv11m-seg : epochs=${YOLO_EPOCHS}  batch=${YOLO_BATCH}  workers=${YOLO_WORKERS}"
-    echo "  Mask R-CNN   : epochs=${MRCNN_EPOCHS} batch=${MRCNN_BATCH} workers=${MRCNN_WORKERS}"
-    echo "  Fast R-CNN   : epochs=${FASTRCNN_EPOCHS} batch=${FASTRCNN_BATCH} workers=${FASTRCNN_WORKERS}"
-    echo "------------------"
+    if [ "$ENABLE_MASK2FORMER" -eq 1 ]; then
+        ask_hparams "Mask2Former"   20 2  4
+        M2F_EPOCHS=$HP_EPOCHS; M2F_BATCH=$HP_BATCH; M2F_WORKERS=$HP_WORKERS
+    fi
 }
 
 if [ -n "$1" ]; then
@@ -166,12 +146,14 @@ else
     read -p " Enter choice [1-5]: " CHOICE
 fi
 
+BASE_OUT_DIR="runs_comparison/run_${TIMESTAMP}"
+
 case "$CHOICE" in
     1)
         echo ""
         echo "[TASK] Starting Image Auto-Annotation..."
-        read -p " Enter input images directory [default: ./RAW_DATASET]: " INPUT_DIR
-        INPUT_DIR=${INPUT_DIR:-./RAW_DATASET}
+        read -p " Enter input images directory [default: ./RAW_DATASET/IMAGES]: " INPUT_DIR
+        INPUT_DIR=${INPUT_DIR:-./RAW_DATASET/IMAGES}
         read -p " Enter output directory [default: ./datasets/auto_annotated]: " OUTPUT_DIR
         OUTPUT_DIR=${OUTPUT_DIR:-./datasets/auto_annotated}
 
@@ -182,29 +164,12 @@ case "$CHOICE" in
         echo ""
         echo "[TASK] Starting Dataset Prep & Model Training..."
 
-        
-	collect_models
-	collect_training_hparams
+        collect_models
+        collect_training_hparams
 
-        # Step A: Dataset Prep
-        run_step "01" "dataset_prep" bash scripts/data/download_and_prepare_datasets.sh
-        
-        # Read dataset choice AFTER prep has run
-        if [ -f "datasets/.dataset_choice.txt" ]; then
-            DATA_CHOICE=$(cat datasets/.dataset_choice.txt)
-            if [ "$DATA_CHOICE" == "1" ]; then
-                DATASET_NAME="custom_carparts"
-            elif [ "$DATA_CHOICE" == "3" ]; then
-                DATASET_NAME="combined_carparts"
-            else
-                DATASET_NAME="carparts-seg"
-            fi
-        else
-            DATASET_NAME="carparts-seg"
-        fi
+        DATASET_NAME="combined_carparts"
 
-        # Step B: Model Training
-        # Select models to train
+        # Model Training
         if [ "$ENABLE_YOLO" -eq 1 ]; then
             run_step "02" "train_yolo" \
                 python scripts/training/train_yolo_seg.py \
@@ -212,39 +177,31 @@ case "$CHOICE" in
                 --epochs "$YOLO_EPOCHS" \
                 --batch "$YOLO_BATCH" \
                 --workers "$YOLO_WORKERS" \
-                --dataset "$DATASET_NAME"
+                --dataset "$DATASET_NAME" \
+                --output_dir "${BASE_OUT_DIR}/yolo11m-seg"
         fi
 
         if [ "$ENABLE_MASKRCNN" -eq 1 ]; then
-            run_step "03b" "train_maskrcnn" \
+            run_step "03" "train_maskrcnn" \
                 python scripts/training/train_maskrcnn.py \
                 --dataset "$DATASET_NAME" \
                 --epochs "$MRCNN_EPOCHS" \
                 --batch "$MRCNN_BATCH" \
-                --num_workers "$MRCNN_WORKERS"
+                --num_workers "$MRCNN_WORKERS" \
+                --output_dir "${BASE_OUT_DIR}/maskrcnn"
         fi
 
-        if [ "$ENABLE_FASTRCNN" -eq 1 ]; then
-            run_step "05" "train_fastrcnn" \
-                python scripts/training/train_fastrcnn.py \
+        if [ "$ENABLE_MASK2FORMER" -eq 1 ]; then
+            run_step "04" "train_mask2former" \
+                python scripts/training/train_mask2former.py \
                 --dataset "$DATASET_NAME" \
-                --epochs "$FASTRCNN_EPOCHS" \
-                --batch "$FASTRCNN_BATCH" \
-                --num_workers "$FASTRCNN_WORKERS"
+                --epochs "$M2F_EPOCHS" \
+                --batch "$M2F_BATCH" \
+                --num_workers "$M2F_WORKERS" \
+                --output_dir "${BASE_OUT_DIR}/mask2former"
         fi
 
-        # Step C: Evaluation
-        if [ "$ENABLE_YOLO" -eq 1 ]; then
-            YOLO_WEIGHTS=$(cat last_yolo_weights_path.txt 2>/dev/null || echo "runs_comparison/yolo11m-seg_carparts-seg/weights/best.pt")
-            run_step "06a" "evaluate_yolo" python scripts/evaluation/evaluate_confusion_matrix.py --model yolo --weights "$YOLO_WEIGHTS" --dataset "$DATASET_NAME"
-        fi
-        if [ "$ENABLE_MASKRCNN" -eq 1 ]; then
-            run_step "06e" "evaluate_maskrcnn" python scripts/evaluation/evaluate_confusion_matrix.py --model maskrcnn --weights runs_comparison/maskrcnn/best_model.pt --dataset "$DATASET_NAME"
-        fi
-        if [ "$ENABLE_FASTRCNN" -eq 1 ]; then
-            run_step "06f" "evaluate_fastrcnn" python scripts/evaluation/evaluate_confusion_matrix.py --model fastrcnn --weights runs_comparison/fastrcnn/best_model.pt --dataset "$DATASET_NAME"
-        fi
-        run_step "07" "compare_all_models" python scripts/evaluation/compare_all_models.py --dataset "$DATASET_NAME"
+        run_step "05" "export_excel" python scripts/evaluation/export_excel_report.py --run_dir "$BASE_OUT_DIR"
         ;;
 
     3)
@@ -260,35 +217,17 @@ case "$CHOICE" in
 
     4)
         echo ""
-        echo "[TASK] Executing Full Pipeline (Dataset Prep -> Train -> Eval)..."
+        echo "[TASK] Executing Full Pipeline (Train -> Eval -> Compare)..."
 
+        ENABLE_YOLO=1; ENABLE_MASKRCNN=1; ENABLE_MASK2FORMER=1
         collect_training_hparams
+        DATASET_NAME="combined_carparts"
 
-        run_step "01" "dataset_prep" bash scripts/data/download_and_prepare_datasets.sh
+        run_step "02" "train_yolo" python scripts/training/train_yolo_seg.py --model yolo11m-seg --epochs "$YOLO_EPOCHS" --batch "$YOLO_BATCH" --workers "$YOLO_WORKERS" --dataset "$DATASET_NAME" --output_dir "${BASE_OUT_DIR}/yolo11m-seg"
+        run_step "03" "train_maskrcnn" python scripts/training/train_maskrcnn.py --dataset "$DATASET_NAME" --epochs "$MRCNN_EPOCHS" --batch "$MRCNN_BATCH" --num_workers "$MRCNN_WORKERS" --output_dir "${BASE_OUT_DIR}/maskrcnn"
+        run_step "04" "train_mask2former" python scripts/training/train_mask2former.py --dataset "$DATASET_NAME" --epochs "$M2F_EPOCHS" --batch "$M2F_BATCH" --num_workers "$M2F_WORKERS" --output_dir "${BASE_OUT_DIR}/mask2former"
 
-        # Read dataset choice AFTER prep has run
-        if [ -f "datasets/.dataset_choice.txt" ]; then
-            DATA_CHOICE=$(cat datasets/.dataset_choice.txt)
-            if [ "$DATA_CHOICE" == "1" ]; then
-                DATASET_NAME="custom_carparts"
-            elif [ "$DATA_CHOICE" == "3" ]; then
-                DATASET_NAME="combined_carparts"
-            else
-                DATASET_NAME="carparts-seg"
-            fi
-        else
-            DATASET_NAME="carparts-seg"
-        fi
-        run_step "02" "train_yolo" python scripts/training/train_yolo_seg.py --model yolo11m-seg --epochs "$YOLO_EPOCHS" --batch "$YOLO_BATCH" --workers "$YOLO_WORKERS" --dataset "$DATASET_NAME"
-        run_step "03b" "train_maskrcnn" python scripts/training/train_maskrcnn.py --dataset "$DATASET_NAME" --epochs "$MRCNN_EPOCHS" --batch "$MRCNN_BATCH" --num_workers "$MRCNN_WORKERS"
-        run_step "05" "train_fastrcnn" python scripts/training/train_fastrcnn.py --dataset "$DATASET_NAME" --epochs "$FASTRCNN_EPOCHS" --batch "$FASTRCNN_BATCH" --num_workers "$FASTRCNN_WORKERS"
-
-        YOLO_WEIGHTS=$(cat last_yolo_weights_path.txt 2>/dev/null || echo "runs_comparison/yolo11m-seg_carparts-seg/weights/best.pt")
-        run_step "06a" "evaluate_yolo" python scripts/evaluation/evaluate_confusion_matrix.py --model yolo --weights "$YOLO_WEIGHTS" --dataset "$DATASET_NAME"
-        run_step "06e" "evaluate_maskrcnn" python scripts/evaluation/evaluate_confusion_matrix.py --model maskrcnn --weights runs_comparison/maskrcnn/best_model.pt --dataset "$DATASET_NAME"
-        run_step "06f" "evaluate_fastrcnn" python scripts/evaluation/evaluate_confusion_matrix.py --model fastrcnn --weights runs_comparison/fastrcnn/best_model.pt --dataset "$DATASET_NAME"
-
-        run_step "07" "compare_all_models" python scripts/evaluation/compare_all_models.py --dataset "$DATASET_NAME"
+        run_step "05" "compare_models" python scripts/evaluation/compare_models.py --run_dir "$BASE_OUT_DIR" --out_dir "$BASE_OUT_DIR" --non_interactive
         ;;
 
     5)

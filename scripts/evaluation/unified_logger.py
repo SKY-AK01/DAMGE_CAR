@@ -158,15 +158,27 @@ class UnifiedLogger:
             ])
             
         json_path = self.output_dir / f"metrics_epoch_{epoch}.json"
+        epoch_data = {
+            "model_name": self.model_name,
+            "epoch": epoch,
+            "train_stats": train_stats,
+            "val_metrics": val_metrics,
+            "best_mask_map50": self.best_mask_map50,
+            "is_best": is_best
+        }
         with open(json_path, "w") as f:
-            json.dump({
-                "model_name": self.model_name,
-                "epoch": epoch,
-                "train_stats": train_stats,
-                "val_metrics": val_metrics,
-                "best_mask_map50": self.best_mask_map50,
-                "is_best": is_best
-            }, f, indent=4)
+            json.dump(epoch_data, f, indent=4)
+
+        if is_best:
+            best_json_path = self.output_dir / "best_metrics.json"
+            with open(best_json_path, "w") as f:
+                json.dump({
+                    "model_name": self.model_name,
+                    "best_epoch": self.best_epoch,
+                    "best_mask_map50": self.best_mask_map50,
+                    "train_stats": train_stats,
+                    "val_metrics": val_metrics
+                }, f, indent=4)
             
         self.last_val_metrics = val_metrics if val_metrics else getattr(self, 'last_val_metrics', None)
         self.last_train_stats = train_stats
