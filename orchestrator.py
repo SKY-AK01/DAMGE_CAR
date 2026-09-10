@@ -62,19 +62,16 @@ def display_main_menu():
     print("======================================================================")
     print("        Car-Parts Segmentation -- Interactive Python Orchestrator       ")
     print("======================================================================")
-    print("  1) Train Model Locally   -- Prepare dataset & train YOLO / Mask R-CNN / Mask2Former")
-    print("  2) Run Full Pipeline     -- Dataset Prep -> Train -> Evaluate -> Comparison Report")
-    print("  3) Compare Models        -- Compare metrics, curves, plots & multi-sheet Excel")
-    print("  4) Test on Trained Model -- Run inference on test images using trained weights")
-    print("  5) Auto-Prepare Dataset  -- Download missing sources, match taxonomy, combine, COCO JSON")
-    print("  6) Dataset Analytics     -- View image counts, total annotations, & class breakdown")
-    print("  7) Preprocess Tools      -- Standalone tools (yolo_to_coco, combine, verify, hash)")
-    print("  8) Annotate Images       -- Auto-annotate dataset (Grounding DINO + SAM2)")
-    print("  9) GPU Capacity Check   -- Stepwise batch size & worker stress tester")
-    print("  10) Train on Azure ML    -- Auto-upload dataset & submit GPU job to Azure ML")
-    print("  11) Quick Pipeline Check -- Fast 3-epoch dry run on Azure ML")
-    print("  12) Cleanup Pipeline     -- Wipe stale outputs interactively (safe, keeps raw/)")
-    print("  13) Exit")
+    print("  1) Train Models Locally   -- Prepare dataset, train models & generate comparison")
+    print("  2) Compare Models         -- Compare metrics, curves, plots & multi-sheet Excel")
+    print("  3) Test on Trained Model  -- Run inference on test images using trained weights")
+    print("  4) Auto-Prepare Dataset   -- Match taxonomy, combine sources, generate COCO JSON")
+    print("  5) Dataset Analytics      -- View image counts, total annotations, & class breakdown")
+    print("  6) Preprocess Tools       -- Standalone tools (yolo_to_coco, combine, verify, hash)")
+    print("  7) GPU Capacity Check     -- Stepwise batch size & worker stress tester")
+    print("  8) Train on Azure ML      -- Submit GPU job to Azure ML (Single / All / Dry-run)")
+    print("  9) Cleanup Pipeline       -- Wipe stale outputs interactively (safe, keeps raw/)")
+    print("  10) Exit")
     print("======================================================================")
 
 class ModelSelection:
@@ -357,62 +354,105 @@ def interactive_cleanup_prompt():
     print("=" * 68)
     return clean_runs, clean_raw
 
-def ensure_and_prepare_datasets(logs_dir):
-    interactive_cleanup_prompt()
+def prompt_dataset_sources():
+    """
+    Ask user which dataset sources to include in training.
+    Returns: (use_raw, use_external)
+      - use_raw: bool - include RAW_DATASET (custom carparts)
+      - use_external: bool - include external datasets (carparts-seg, dsmlr)
+    """
+    print()
+    print("======================================================================")
+    print(" Select Dataset Sources")
+    print("======================================================================")
+    print("  1) RAW_DATASET only (your custom annotated data)")
+    print("  2) External datasets only (carparts-seg + dsmlr from GitHub)")
+    print("  3) BOTH (RAW_DATASET + External datasets) [Recommended]")
+    print("======================================================================")
+    choice = prompt("Enter choice [1-3] (default 3): ") or "3"
+    
+    if choice == "1":
+        return True, False
+    elif choice == "2":
+        return False, True
+    else:  # choice == "3" or default
+        return True, True
+
+
+def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
+    """
+    Prepare datasets based on user selection.
+    
+    Args:
+        logs_dir: Path to logs directory
+        use_raw: Include RAW_DATASET (custom carparts)
+        use_external: Include external datasets (carparts-seg, dsmlr)
+    """
     datasets_dir = PROJECT_ROOT / "datasets"
     os.makedirs(datasets_dir, exist_ok=True)
     log_path = os.path.join(logs_dir, "01_smart_dataset_prep.log")
 
-    # Step 1: RAW_DATASET -> datasets/raw/
-    raw_images = PROJECT_ROOT / "RAW_DATASET" / "IMAGES"
-    raw_xmls   = PROJECT_ROOT / "RAW_DATASET" / "XML"
-    if raw_images.exists() and any(raw_images.iterdir()) and raw_xmls.exists() and any(raw_xmls.iterdir()):
-        print("[*] Found RAW_DATASET — converting XML annotations to YOLO format...")
-        run_cmd_and_log(["python", "scripts/data/prepare_raw_dataset.py"], log_path, "raw_prep")
+    # Step 1: RAW_DATASET -> datasets/raw/ (only if selected)
+    if use_raw:
+        raw_images = PROJECT_ROOT / "RAW_DATASET" / "IMAGES"
+        raw_xmls   = PROJECT_ROOT / "RAW_DATASET" / "XML"
+        if raw_images.exists() and any(raw_images.iterdir()) and raw_xmls.exists() and any(raw_xmls.iterdir()):
+            print("[*] Found RAW_DATASET — converting XML annotations to YOLO format...")
+            run_cmd_and_log(["python", "scripts/data/prepare_raw_dataset.py"], log_path, "raw_prep")
 
-    raw_dir = datasets_dir / "raw"
-    if not raw_dir.exists() or not any((raw_dir / "images").rglob("*.*") if (raw_dir / "images").exists() else []):
-        print("[*] Migrating deduplicated HITL data to datasets/raw/ ...")
-        run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
-
-    # Step 2: External datasets (carparts-seg, DSMLR)
-    carparts_ext = datasets_dir / "external" / "carparts-seg"
-    if not carparts_ext.exists() or not any(carparts_ext.iterdir()):
-        print("\n[*] datasets/external/carparts-seg/ not found — downloading from Ultralytics...")
-        try:
-            import urllib.request, zipfile
-            zip_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/carparts-seg.zip"
-            zip_file = datasets_dir / "carparts-seg.zip"
-            urllib.request.urlretrieve(zip_url, zip_file)
-            extract_target = datasets_dir / "carparts-seg"
-            with zipfile.ZipFile(zip_file, "r") as zf:
-                zf.extractall(datasets_dir)
-            zip_file.unlink(missing_ok=True)
+        raw_dir = datasets_dir / "raw"
+        if not raw_dir.exists() or not any((raw_dir / "images").rglob("*.*") if (raw_dir / "images").exists() else []):
+            print("[*] Migrating deduplicated HITL data to datasets/raw/ ...")
             run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
-        except Exception as e:
-            print(f"[WARN] Could not auto-download carparts-seg: {e}")
+    else:
+        print("[*] Skipping RAW_DATASET (user choice: external only)")
 
-    dsmlr_ext = datasets_dir / "external" / "dsmlr"
-    if not dsmlr_ext.exists() or not any(dsmlr_ext.iterdir()):
-        dsmlr_raw = datasets_dir / "dsmlr-carparts"
-        if not dsmlr_raw.exists() or not any(dsmlr_raw.iterdir()):
-            cmd = ["git", "clone", "--depth", "1", "https://github.com/dsmlr/Car-Parts-Segmentation.git", str(dsmlr_raw)]
-            run_cmd_and_log(cmd, log_path, "dsmlr_clone")
-        if dsmlr_raw.exists() and any(dsmlr_raw.iterdir()):
-            run_cmd_and_log(["python", "scripts/data/prepare_dsmlr_split.py"], log_path, "dsmlr_split")
-            run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+    # Step 2: External datasets (carparts-seg, DSMLR) (only if selected)
+    if use_external:
+        carparts_ext = datasets_dir / "external" / "carparts-seg"
+        if not carparts_ext.exists() or not any(carparts_ext.iterdir()):
+            print("\n[*] datasets/external/carparts-seg/ not found — downloading from Ultralytics...")
+            try:
+                import urllib.request, zipfile
+                zip_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/carparts-seg.zip"
+                zip_file = datasets_dir / "carparts-seg.zip"
+                urllib.request.urlretrieve(zip_url, zip_file)
+                extract_target = datasets_dir / "carparts-seg"
+                with zipfile.ZipFile(zip_file, "r") as zf:
+                    zf.extractall(datasets_dir)
+                zip_file.unlink(missing_ok=True)
+                run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
+            except Exception as e:
+                print(f"[WARN] Could not auto-download carparts-seg: {e}")
 
-    # Step 3: Match taxonomy
-    matched_cs = datasets_dir / "matched" / "carparts-seg"
-    matched_dsmlr = datasets_dir / "matched" / "dsmlr"
-    if not (matched_cs / "images").exists() and (datasets_dir / "external" / "carparts-seg").exists():
-        run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
-    if not (matched_dsmlr / "images").exists() and (datasets_dir / "external" / "dsmlr").exists():
-        run_cmd_and_log(["python", "scripts/data/match_dsmlr.py"], log_path, "match_dsmlr")
+        dsmlr_ext = datasets_dir / "external" / "dsmlr"
+        if not dsmlr_ext.exists() or not any(dsmlr_ext.iterdir()):
+            dsmlr_raw = datasets_dir / "dsmlr-carparts"
+            if not dsmlr_raw.exists() or not any(dsmlr_raw.iterdir()):
+                cmd = ["git", "clone", "--depth", "1", "https://github.com/dsmlr/Car-Parts-Segmentation.git", str(dsmlr_raw)]
+                run_cmd_and_log(cmd, log_path, "dsmlr_clone")
+            if dsmlr_raw.exists() and any(dsmlr_raw.iterdir()):
+                run_cmd_and_log(["python", "scripts/data/prepare_dsmlr_split.py"], log_path, "dsmlr_split")
+                run_cmd_and_log(["python", "scripts/data/setup_dataset_structure.py"], log_path, "setup_structure")
 
-    # Step 4: Combine datasets
-    print("\n[*] Rebuilding combined_carparts from raw/ + matched/* ...")
-    run_cmd_and_log(["python", "scripts/data/combine_datasets.py"], log_path, "combine_datasets")
+        # Step 3: Match taxonomy
+        matched_cs = datasets_dir / "matched" / "carparts-seg"
+        matched_dsmlr = datasets_dir / "matched" / "dsmlr"
+        if not (matched_cs / "images").exists() and (datasets_dir / "external" / "carparts-seg").exists():
+            run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
+        if not (matched_dsmlr / "images").exists() and (datasets_dir / "external" / "dsmlr").exists():
+            run_cmd_and_log(["python", "scripts/data/match_dsmlr.py"], log_path, "match_dsmlr")
+    else:
+        print("[*] Skipping external datasets (user choice: RAW_DATASET only)")
+
+    # Step 4: Combine datasets (with selected sources)
+    print("\n[*] Rebuilding combined_carparts from selected sources...")
+    cmd = ["python", "scripts/data/combine_datasets.py"]
+    if not use_raw:
+        cmd.append("--no-raw")
+    if not use_external:
+        cmd.append("--no-external")
+    run_cmd_and_log(cmd, log_path, "combine_datasets")
 
     # Step 5: Generate COCO JSON
     print("\n[*] Regenerating COCO JSON for Mask R-CNN / Mask2Former...")
@@ -588,58 +628,16 @@ def main():
         f.write(f"Project root: {PROJECT_ROOT}\n")
 
     display_main_menu()
-    choice = prompt("Enter choice [1-13]: ")
+    choice = prompt("Enter choice [1-10]: ")
 
     if choice == "1":
-        print("\n[TASK] Train Model Locally")
+        print("\n[TASK] Train Models Locally (Dataset Prep -> Train -> Eval -> Compare)")
         models = collect_models()
         hparams = Hyperparams(models)
-        dataset = ensure_and_prepare_datasets(logs_dir)
-        run_config_path = save_run_config(logs_dir, "Train Model Locally", dataset, models, hparams)
-        _generate_report(run_config_path, logs_dir)
-
-        if models.yolo:
-            log_path = os.path.join(logs_dir, "02_train_yolo.log")
-            out_dir = os.path.join(base_out_dir, "yolo11m-seg")
-            cmd = ["python", "scripts/training/train_yolo_seg.py", "--model", "yolo11m-seg",
-                   "--dataset", dataset, "--epochs", str(hparams.yolo_epochs),
-                   "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers),
-                   "--val_interval", str(hparams.yolo_val_interval),
-                   "--output_dir", out_dir]
-            run_cmd_and_log(cmd, log_path, "train_yolo")
-
-        if models.maskrcnn:
-            log_path = os.path.join(logs_dir, "03_train_maskrcnn.log")
-            out_dir = os.path.join(base_out_dir, "maskrcnn")
-            cmd = ["python", "scripts/training/train_maskrcnn.py", "--dataset", dataset,
-                   "--epochs", str(hparams.mrcnn_epochs), "--batch", str(hparams.mrcnn_batch),
-                   "--num_workers", str(hparams.mrcnn_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.mrcnn_val_interval),
-                   "--accum_steps", str(hparams.mrcnn_accum_steps)]
-            run_cmd_and_log(cmd, log_path, "train_maskrcnn")
-
-        if models.mask2former:
-            log_path = os.path.join(logs_dir, "04_train_mask2former.log")
-            out_dir = os.path.join(base_out_dir, "mask2former")
-            cmd = ["python", "scripts/training/train_mask2former.py", "--dataset", dataset,
-                   "--epochs", str(hparams.m2f_epochs), "--batch", str(hparams.m2f_batch),
-                   "--num_workers", str(hparams.m2f_workers), "--output_dir", out_dir,
-                   "--val_interval", str(hparams.m2f_val_interval),
-                   "--accum_steps", str(hparams.m2f_accum_steps)]
-            if hparams.m2f_compile:
-                cmd.append("--compile")
-            run_cmd_and_log(cmd, log_path, "train_mask2former")
-
-        # Export Excel & Comparison
-        cmd = ["python", "scripts/evaluation/compare_models.py", "--run_dir", base_out_dir, "--out_dir", base_out_dir, "--non_interactive"]
-        run_cmd_and_log(cmd, os.path.join(logs_dir, "05_compare_models.log"), "compare_models")
-
-    elif choice == "2":
-        print("\n[TASK] Full Pipeline (Dataset Prep -> Train -> Evaluate -> Compare)")
-        models = collect_models()
-        hparams = Hyperparams(models)
-        dataset = ensure_and_prepare_datasets(logs_dir)
-        run_config_path = save_run_config(logs_dir, "Full Pipeline", dataset, models, hparams)
+        # Ask user which dataset sources to use
+        use_raw, use_external = prompt_dataset_sources()
+        dataset = ensure_and_prepare_datasets(logs_dir, use_raw, use_external)
+        run_config_path = save_run_config(logs_dir, "Train Models Locally", dataset, models, hparams)
         _generate_report(run_config_path, logs_dir)
 
         if models.yolo:
@@ -676,7 +674,7 @@ def main():
 
         run_evaluation(dataset, base_out_dir, logs_dir)
 
-    elif choice == "3":
+    elif choice == "2":
         print("\n[TASK] Compare Models (YOLO11m-seg / Mask R-CNN / Mask2Former)")
         default_test = str(PROJECT_ROOT / "test_data")
         run_test = prompt("  Run test-data inference on images? [y/N] (default: n): ").lower() in ("y", "yes")
@@ -698,7 +696,7 @@ def main():
         log_path = os.path.join(logs_dir, "00_compare_models.log")
         run_cmd_and_log(cmd, log_path, "compare_models")
 
-    elif choice == "4":
+    elif choice == "3":
         print("\n[TASK] Test on Trained Model (Inference)")
         inp = prompt_default("Test images directory", "./test")
         out = prompt_default("Output directory", "./test_result")
@@ -708,26 +706,29 @@ def main():
         cmd = ["python", "scripts/inference/infer_both_models.py", "--input", inp, "--output", out, "--conf", conf]
         run_cmd_and_log(cmd, log_path, "inference")
 
-    elif choice == "5":
+    elif choice == "4":
         print("\n[TASK] Auto-Prepare Dataset")
-        combined_name = ensure_and_prepare_datasets(logs_dir)
+        # Ask user which dataset sources to use
+        use_raw, use_external = prompt_dataset_sources()
+        combined_name = ensure_and_prepare_datasets(logs_dir, use_raw, use_external)
         run_config_path = save_run_config(logs_dir, "Auto-Prepare Dataset", combined_name)
         _generate_report(run_config_path, logs_dir)
         print(f"\n[OK] Dataset ready in './datasets/{combined_name}'!")
         analyze_dataset(combined_name)
 
-    elif choice == "6":
+    elif choice == "5":
         print("\n[TASK] Dataset Analytics")
         ds = prompt_default("Dataset name (under ./datasets)", "combined_carparts")
         analyze_dataset(ds)
 
-    elif choice == "7":
+    elif choice == "6":
         print("\n[TASK] Dataset Preprocessing Tools")
         print("  a) yolo_to_coco    -- Convert YOLO polygons -> COCO JSON (parallel)")
         print("  b) combine         -- Merge multiple YOLO datasets (parallel copy)")
         print("  c) verify_labels   -- Scan for corrupt images (report-only)")
         print("  d) hash_dataset    -- Write blake3 checksums manifest")
-        sub = prompt("Enter sub-option [a-d]: ")
+        print("  e) auto_annotate   -- Auto-annotate images (Grounding DINO + SAM2)")
+        sub = prompt("Enter sub-option [a-e]: ")
         if sub == "a":
             ds = prompt_default("Dataset", "combined_carparts")
             workers = prompt_default("Workers", "8")
@@ -749,18 +750,16 @@ def main():
             workers = prompt_default("Workers", "8")
             cmd = ["python", "scripts/data/hash_dataset.py", "--dir", dir_raw, "--out", out_manifest, "--workers", str(workers)]
             run_cmd_and_log(cmd, os.path.join(logs_dir, "preprocess_hash.log"), "hash_dataset")
+        elif sub == "e":
+            inp = prompt_default("Input images directory", "./RAW_DATASET/IMAGES")
+            out = prompt_default("Output directory", "./datasets/auto_annotated")
+            log_path = os.path.join(logs_dir, "01_annotation.log")
+            cmd = ["python", "scripts/inference/auto_annotate_carparts.py", "--input", inp, "--output", out]
+            run_cmd_and_log(cmd, log_path, "annotation")
         else:
             print(f"[ERROR] Unknown sub-option '{sub}'")
 
-    elif choice == "8":
-        print("\n[TASK] Auto-annotation (Grounding DINO + SAM2)")
-        inp = prompt_default("Input images directory", "./RAW_DATASET/IMAGES")
-        out = prompt_default("Output directory", "./datasets/auto_annotated")
-        log_path = os.path.join(logs_dir, "01_annotation.log")
-        cmd = ["python", "scripts/inference/auto_annotate_carparts.py", "--input", inp, "--output", out]
-        run_cmd_and_log(cmd, log_path, "annotation")
-
-    elif choice == "9":
+    elif choice == "7":
         print("\n[TASK] GPU Capacity Check")
         mode = prompt_default("Run mode (local / azure)", "local")
         ds = prompt_default("Dataset path", "./datasets/combined_carparts")
@@ -768,45 +767,44 @@ def main():
         cmd = ["python", "scripts/training/capacity_check.py", "--dataset", ds, "--mode", mode]
         run_cmd_and_log(cmd, log_path, "capacity_check")
 
-    elif choice == "10":
+    elif choice == "8":
         print("\n[TASK] Train on Azure ML")
-        models = collect_models()
-        hparams = Hyperparams(models)
+        is_dryrun = prompt("  Run 3-epoch quick pipeline check (dry run)? [y/N] (default: n): ").lower() in ("y", "yes")
         local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
 
-        all_selected = (models.yolo and models.maskrcnn and models.mask2former)
-        if all_selected:
-            log_path = os.path.join(logs_dir, "00_azure_train_all.log")
+        if is_dryrun:
             cmd = ["python", "scripts/training/azure_train.py", "--model", "all",
-                   "--local_dataset_dir", local_dir, "--epochs", str(hparams.yolo_epochs),
-                   "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers), "--auto_upload"]
-            run_cmd_and_log(cmd, log_path, "azure_train_all")
+                   "--local_dataset_dir", local_dir, "--epochs", "3",
+                   "--batch", "-1", "--workers", "8", "--auto_upload"]
+            run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_dryrun.log"), "azure_dryrun")
         else:
-            if models.yolo:
-                cmd = ["python", "scripts/training/azure_train.py", "--model", "yolo11m-seg",
+            models = collect_models()
+            hparams = Hyperparams(models)
+            all_selected = (models.yolo and models.maskrcnn and models.mask2former)
+            if all_selected:
+                log_path = os.path.join(logs_dir, "00_azure_train_all.log")
+                cmd = ["python", "scripts/training/azure_train.py", "--model", "all",
                        "--local_dataset_dir", local_dir, "--epochs", str(hparams.yolo_epochs),
                        "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers), "--auto_upload"]
-                run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_yolo.log"), "azure_train_yolo")
-            if models.maskrcnn:
-                cmd = ["python", "scripts/training/azure_train.py", "--model", "maskrcnn",
-                       "--local_dataset_dir", local_dir, "--epochs", str(hparams.mrcnn_epochs),
-                       "--batch", str(hparams.mrcnn_batch), "--workers", str(hparams.mrcnn_workers), "--auto_upload"]
-                run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_maskrcnn.log"), "azure_train_maskrcnn")
-            if models.mask2former:
-                cmd = ["python", "scripts/training/azure_train.py", "--model", "mask2former",
-                       "--local_dataset_dir", local_dir, "--epochs", str(hparams.m2f_epochs),
-                       "--batch", str(hparams.m2f_batch), "--workers", str(hparams.m2f_workers), "--auto_upload"]
-                run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_mask2former.log"), "azure_train_mask2former")
+                run_cmd_and_log(cmd, log_path, "azure_train_all")
+            else:
+                if models.yolo:
+                    cmd = ["python", "scripts/training/azure_train.py", "--model", "yolo11m-seg",
+                           "--local_dataset_dir", local_dir, "--epochs", str(hparams.yolo_epochs),
+                           "--batch", str(hparams.yolo_batch), "--workers", str(hparams.yolo_workers), "--auto_upload"]
+                    run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_yolo.log"), "azure_train_yolo")
+                if models.maskrcnn:
+                    cmd = ["python", "scripts/training/azure_train.py", "--model", "maskrcnn",
+                           "--local_dataset_dir", local_dir, "--epochs", str(hparams.mrcnn_epochs),
+                           "--batch", str(hparams.mrcnn_batch), "--workers", str(hparams.mrcnn_workers), "--auto_upload"]
+                    run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_maskrcnn.log"), "azure_train_maskrcnn")
+                if models.mask2former:
+                    cmd = ["python", "scripts/training/azure_train.py", "--model", "mask2former",
+                           "--local_dataset_dir", local_dir, "--epochs", str(hparams.m2f_epochs),
+                           "--batch", str(hparams.m2f_batch), "--workers", str(hparams.m2f_workers), "--auto_upload"]
+                    run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_train_mask2former.log"), "azure_train_mask2former")
 
-    elif choice == "11":
-        print("\n[TASK] Quick Pipeline Check -- 3-Epoch Dry Run on Azure ML")
-        local_dir = prompt_default("Local dataset directory", "./datasets/combined_carparts")
-        cmd = ["python", "scripts/training/azure_train.py", "--model", "all",
-               "--local_dataset_dir", local_dir, "--epochs", "3",
-               "--batch", "-1", "--workers", "8", "--auto_upload"]
-        run_cmd_and_log(cmd, os.path.join(logs_dir, "00_azure_dryrun.log"), "azure_dryrun")
-
-    elif choice == "12":
+    elif choice == "9":
         print("\n[TASK] Cleanup Pipeline")
         import importlib.util
         _spec = importlib.util.spec_from_file_location(
@@ -817,7 +815,7 @@ def main():
         _spec.loader.exec_module(_mod)
         _mod.main()
 
-    elif choice == "13":
+    elif choice == "10":
         print("Exiting.")
         sys.exit(0)
 

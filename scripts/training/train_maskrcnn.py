@@ -399,7 +399,7 @@ def main():
         weights_dir = os.path.join(args.output_dir, "weights")
         os.makedirs(weights_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(weights_dir, "last.pt"))
-        torch.save(model.state_dict(), os.path.join(args.output_dir, "last.pt"))
+        torch.save(model.state_dict(), os.path.join(args.output_dir, "last_model.pt"))
         if is_best:
             torch.save(model.state_dict(), os.path.join(weights_dir, "best.pt"))
             torch.save(model.state_dict(), os.path.join(args.output_dir, "best_model.pt"))

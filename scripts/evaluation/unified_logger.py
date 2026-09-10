@@ -11,18 +11,61 @@ import os
 import time
 from pathlib import Path
 
+class DualWriter:
+    """Mirrors a stream to both console and a log file simultaneously."""
+    def __init__(self, stream, file_path):
+        self.stream = stream
+        self.file = open(file_path, "a", encoding="utf-8", errors="replace")
+        self._is_tee = True
+
+    def write(self, data):
+        try:
+            self.stream.write(data)
+            self.stream.flush()
+        except Exception:
+            pass
+        try:
+            self.file.write(data)
+            self.file.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:
+            pass
+        try:
+            self.file.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self.stream, 'isatty', lambda: False)()
+
+    def fileno(self):
+        return self.stream.fileno()
+
 class UnifiedLogger:
     def __init__(self, output_dir, model_name, patience=5):
         self.output_dir = Path(output_dir)
         self.model_name = model_name
         self.patience = patience
         self.metrics_csv = self.output_dir / "metrics.csv"
+        self.log_file = self.output_dir / "train.log"
         self.best_mask_map50 = -1.0
         self.best_epoch = -1
         self.patience_counter = 0
         self.start_time = time.time()
         
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Mirror console output AND stderr to <output_dir>/train.log so all
+        # output (including Python tracebacks) is always saved to file.
+        if not getattr(sys.stdout, "_is_tee", False):
+            sys.stdout = DualWriter(sys.stdout, self.log_file)
+        if not getattr(sys.stderr, "_is_tee", False):
+            sys.stderr = DualWriter(sys.stderr, self.log_file)
         
         # Initialize CSV
         if not self.metrics_csv.exists():

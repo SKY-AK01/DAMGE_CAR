@@ -6,14 +6,14 @@ def test_cli_args():
     # are accepted by the python training scripts.
     
     # The orchestrator uses these arguments:
-    # yolo: --model, --dataset, --epochs, --batch, --workers, --project
+    # yolo: --model, --dataset, --epochs, --batch, --workers, --output_dir
     # maskrcnn: --dataset, --epochs, --batch, --num_workers, --output_dir
-    # fastrcnn: --dataset, --epochs, --batch, --num_workers, --project
+    # mask2former: --dataset, --epochs, --batch, --num_workers, --output_dir
     
     scripts = {
-        "train_yolo_seg.py": ["--model", "yolo11m-seg", "--dataset", "test", "--epochs", "1", "--batch", "1", "--workers", "1", "--project", "test_proj"],
+        "train_yolo_seg.py": ["--model", "yolo11m-seg", "--dataset", "test", "--epochs", "1", "--batch", "1", "--workers", "1", "--output_dir", "test_out"],
         "train_maskrcnn.py": ["--dataset", "test", "--epochs", "1", "--batch", "1", "--num_workers", "1", "--output_dir", "test_out"],
-        "train_fastrcnn.py": ["--dataset", "test", "--epochs", "1", "--batch", "1", "--num_workers", "1", "--project", "test_proj"]
+        "train_mask2former.py": ["--dataset", "test", "--epochs", "1", "--batch", "1", "--num_workers", "1", "--output_dir", "test_out"]
     }
     
     for script, args in scripts.items():

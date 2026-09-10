@@ -3,13 +3,13 @@ evaluate_confusion_matrix.py
 --------------------------------
 Runs each trained model on the test set, matches predictions to ground truth
 boxes (IoU > 0.5), and builds a confusion matrix. Specifically flags and
-prints out front/rear and left/right mixup rates, since that's the exact
-question this whole comparison exists to answer.
+prints out front/rear and left/right mixup rates. Target models: YOLO11m-seg,
+Mask R-CNN, and Mask2Former.
 
 Usage:
-    python evaluate_confusion_matrix.py --model yolo --weights runs_comparison/yolo11m-seg_carparts-seg/weights/best.pt --dataset carparts-seg
-    python evaluate_confusion_matrix.py --model mask2former --weights runs_comparison/mask2former/best_model --dataset carparts-seg
-    python evaluate_confusion_matrix.py --model maskdino --weights runs_comparison/maskdino_carparts-seg/model_final.pth --dataset carparts-seg
+    python evaluate_confusion_matrix.py --model yolo --weights runs_comparison/yolo11m-seg/weights/best.pt --dataset combined_carparts
+    python evaluate_confusion_matrix.py --model mask2former --weights runs_comparison/mask2former/weights/best --dataset combined_carparts
+    python evaluate_confusion_matrix.py --model maskrcnn --weights runs_comparison/maskrcnn/weights/best.pt --dataset combined_carparts
 """
 
 import argparse
@@ -149,70 +149,6 @@ def get_predictions_mask2former(weights_path, test_images_dir, test_json_path, c
     return preds_by_image
 
 
-def get_predictions_oneformer(weights_path, test_images_dir, test_json_path, class_names):
-    import torch
-    from PIL import Image
-    from transformers import OneFormerForUniversalSegmentation, OneFormerProcessor
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    processor = OneFormerProcessor.from_pretrained(weights_path)
-    model = OneFormerForUniversalSegmentation.from_pretrained(weights_path).to(device).eval()
-
-    with open(test_json_path) as f:
-        coco = json.load(f)
-
-    preds_by_image = {}
-    for img_info in coco["images"]:
-        img_path = Path(test_images_dir) / img_info["file_name"]
-        image = Image.open(img_path).convert("RGB")
-        inputs = processor(images=image, task_inputs=["instance"], return_tensors="pt").to(device)
-        with torch.no_grad():
-            outputs = model(**inputs)
-        result = processor.post_process_instance_segmentation(
-            outputs, target_sizes=[(img_info["height"], img_info["width"])]
-        )[0]
-
-        preds = []
-        for seg in result.get("segments_info", []):
-            mask = (result["segmentation"] == seg["id"]).cpu().numpy()
-            ys, xs = np.where(mask)
-            if len(xs) == 0:
-                continue
-            box = [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())]
-            preds.append({"box": box, "class": class_names[seg["label_id"]]})
-        preds_by_image[img_info["file_name"]] = preds
-
-    return preds_by_image
-
-
-def get_predictions_maskdino(weights_path, config_path, test_images_dir, test_json_path, class_names):
-    # MaskDINO is a Detectron2 model -- inference via Detectron2's DefaultPredictor
-    from detectron2.engine import DefaultPredictor
-    from detectron2.config import get_cfg
-    from PIL import Image
-    import cv2
-
-    cfg = get_cfg()
-    cfg.merge_from_file(config_path)
-    cfg.MODEL.WEIGHTS = weights_path
-    cfg.MODEL.DEVICE = "cuda"
-    predictor = DefaultPredictor(cfg)
-
-    with open(test_json_path) as f:
-        coco = json.load(f)
-
-    preds_by_image = {}
-    for img_info in coco["images"]:
-        img_path = Path(test_images_dir) / img_info["file_name"]
-        im = cv2.imread(str(img_path))
-        outputs = predictor(im)
-        instances = outputs["instances"].to("cpu")
-        preds = []
-        for box, cls in zip(instances.pred_boxes.tensor.tolist(), instances.pred_classes.tolist()):
-            preds.append({"box": box, "class": class_names[cls]})
-        preds_by_image[img_info["file_name"]] = preds
-
-    return preds_by_image
 
 
 def load_ground_truth(test_json_path, class_names):
@@ -304,6 +240,7 @@ def main():
     parser.add_argument("--model", required=True, choices=["yolo", "mask2former", "maskrcnn"])
     parser.add_argument("--weights", required=True)
     parser.add_argument("--dataset", default="combined_carparts", help="Dataset name or path (default: combined_carparts)")
+    parser.add_argument("--out_dir", default="runs_comparison/confusion_matrices", help="Output directory for confusion matrices")
     args = parser.parse_args()
 
     class_names = CARPARTS_SEG_CLASSES
@@ -347,7 +284,7 @@ def main():
 
     print_watch_pair_confusion(matrix, class_names)
 
-    out_dir = Path(f"runs_comparison/confusion_matrices")
+    out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     plot_confusion_matrix(matrix, class_names, out_dir / f"{args.model}_{args.dataset}_confusion.png")
 

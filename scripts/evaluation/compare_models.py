@@ -357,6 +357,10 @@ def generate_excel_workbook(selected_models: dict, out_dir: Path):
         if not summary_df.empty:
             summary_df.sort_values(by="Best Mask mAP50", ascending=False, inplace=True)
             summary_df.to_excel(writer, sheet_name="Summary", index=False)
+            if "Summary" in writer.book.sheetnames:
+                s_sheet = writer.book["Summary"]
+                writer.book._sheets.remove(s_sheet)
+                writer.book._sheets.insert(0, s_sheet)
 
     print(f"[OK] Excel comparison workbook saved to: {out_file}")
 

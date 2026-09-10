@@ -3,7 +3,7 @@ yolo_to_coco.py
 ------------------
 Converts a YOLO-segmentation formatted dataset (images/ + labels/ with
 normalized polygon .txt files, like Ultralytics carparts-seg) into COCO JSON
-format, which Mask2Former and MaskDINO both expect for training.
+format, which Mask2Former and Mask R-CNN both expect for training.
 
 Uses `imagesize` for header-only image dimension reads (no full pixel decode)
 and ThreadPoolExecutor for parallel processing.

@@ -59,32 +59,42 @@ def _wipe_output(out_path: Path):
     print(f"[OK] Output directory reset: {out_path}")
 
 
-def _collect_sources():
+def _collect_sources(use_raw=True, use_external=True):
     """
     Returns list of (source_label, dir_path) for every source that exists on disk.
     Order: raw/ first, then matched/* in sorted order.
+    
+    Args:
+        use_raw: Include datasets/raw/ (custom carparts)
+        use_external: Include datasets/matched/* (carparts-seg, dsmlr)
     """
     sources = []
 
-    raw = DATASETS / "raw"
-    if raw.exists():
-        sources.append(("raw", raw))
+    if use_raw:
+        raw = DATASETS / "raw"
+        if raw.exists():
+            sources.append(("raw", raw))
+        else:
+            print(f"[WARN] datasets/raw/ not found — run setup_dataset_structure.py first.")
     else:
-        print(f"[WARN] datasets/raw/ not found — run setup_dataset_structure.py first.")
+        print("[*] Skipping raw/ (user choice)")
 
-    matched_root = DATASETS / "matched"
-    if matched_root.exists():
-        for sub in sorted(matched_root.iterdir()):
-            if sub.is_dir():
-                sources.append((f"matched_{sub.name}", sub))
+    if use_external:
+        matched_root = DATASETS / "matched"
+        if matched_root.exists():
+            for sub in sorted(matched_root.iterdir()):
+                if sub.is_dir():
+                    sources.append((f"matched_{sub.name}", sub))
+    else:
+        print("[*] Skipping matched/* (user choice)")
 
     return sources
 
 
-def combine(out_dir: Path = OUT_DIR, num_workers: int = 8):
+def combine(out_dir: Path = OUT_DIR, num_workers: int = 8, use_raw: bool = True, use_external: bool = True):
     _wipe_output(out_dir)
 
-    sources = _collect_sources()
+    sources = _collect_sources(use_raw=use_raw, use_external=use_external)
     if not sources:
         print("[ERROR] No source directories found. Run setup_dataset_structure.py and matcher scripts first.")
         return
@@ -198,9 +208,18 @@ def main():
                         help="Output directory (default: datasets/combined_carparts)")
     parser.add_argument("--workers", type=int, default=8,
                         help="Parallel copy workers (default: 8)")
+    parser.add_argument("--no-raw", action="store_true",
+                        help="Exclude datasets/raw/ from combined dataset")
+    parser.add_argument("--no-external", action="store_true",
+                        help="Exclude datasets/matched/* from combined dataset")
     args = parser.parse_args()
 
-    combine(out_dir=Path(args.out_dir), num_workers=args.workers)
+    combine(
+        out_dir=Path(args.out_dir), 
+        num_workers=args.workers,
+        use_raw=not args.no_raw,
+        use_external=not args.no_external
+    )
 
 
 if __name__ == "__main__":

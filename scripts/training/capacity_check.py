@@ -2,7 +2,7 @@
 """
 capacity_check.py -- GPU Capacity & Batch Size / Worker Stress Tester.
 
-Tests candidate batch sizes and worker counts for YOLOv11m-seg, Mask R-CNN, Fast R-CNN, etc.,
+Tests candidate batch sizes and worker counts for YOLOv11m-seg, Mask R-CNN, and Mask2Former,
 to find the maximum stable batch size, peak VRAM usage, and optimal throughput (images/sec)
 before encountering Out-Of-Memory (OOM) or system limits.
 """

@@ -64,7 +64,7 @@ from scripts.evaluation.unified_evaluator import UnifiedEvaluator
 
 
 def make_yaml(dataset_name):
-    """Generates or finds the data.yaml ultralytics needs, pointing at the right split."""
+    """Generates a data.yaml pointing at the resolved dataset split path."""
     ds_path = Path(dataset_name)
     if ds_path.is_dir():
         resolved_ds = ds_path.resolve()
@@ -72,10 +72,15 @@ def make_yaml(dataset_name):
             target_root = resolved_ds / "combined_carparts"
         else:
             target_root = resolved_ds
+    elif (PROJECT_ROOT / "datasets" / dataset_name).is_dir():
+        target_root = (PROJECT_ROOT / "datasets" / dataset_name).resolve()
+    else:
+        target_root = (PROJECT_ROOT / "datasets" / "combined_carparts").resolve()
 
-        yaml_content = f"""path: {target_root.as_posix()}
+    yaml_content = f"""path: {target_root.as_posix()}
 train: images/train
 val: images/val
+test: images/test
 
 names:
   0: back_bumper
@@ -102,20 +107,11 @@ names:
   21: trunk
   22: wheel
 """
-        import tempfile
-        yaml_file = Path(tempfile.gettempdir()) / "car_parts_data.yaml"
-        with open(yaml_file, "w", encoding="utf-8") as f:
-            f.write(yaml_content)
-        return str(yaml_file)
-
-    if dataset_name == "carparts-seg":
-        return "datasets/carparts-seg/carparts-seg.yaml"
-    elif dataset_name == "custom_carparts":
-        return "datasets/custom_carparts/data.yaml"
-    elif dataset_name == "combined_carparts":
-        return "datasets/combined_carparts/data.yaml"
-    else:
-        return f"datasets/{dataset_name}/data.yaml"
+    import tempfile
+    yaml_file = Path(tempfile.gettempdir()) / f"car_parts_{target_root.name}.yaml"
+    with open(yaml_file, "w", encoding="utf-8") as f:
+        f.write(yaml_content)
+    return str(yaml_file)
 
 
 def main():
@@ -227,47 +223,54 @@ def main():
         val_metrics = None
         if run_unified:
             # Run inference manually for unified evaluator
-            model_eval = YOLO(trainer.best) # Use current best weights
-            results = model_eval.predict(source=val_images, conf=0.25, save=False, verbose=False)
+            weights_to_use = None
+            if hasattr(trainer, "best") and trainer.best and Path(trainer.best).exists():
+                weights_to_use = trainer.best
+            elif hasattr(trainer, "last") and trainer.last and Path(trainer.last).exists():
+                weights_to_use = trainer.last
+
+            if weights_to_use:
+                model_eval = YOLO(weights_to_use)
+                results = model_eval.predict(source=val_images, conf=0.25, save=False, verbose=False)
             
-            predictions_by_image = {}
-            # Match image IDs using COCO val json
-            with open(val_json) as f:
-                coco_val = json.load(f)
-            img_name_to_id = {img["file_name"]: img["id"] for img in coco_val["images"]}
-            
-            for r in results:
-                img_name = Path(r.path).name
-                img_id = img_name_to_id.get(img_name)
-                if img_id is None: continue
+                predictions_by_image = {}
+                # Match image IDs using COCO val json
+                with open(val_json) as f:
+                    coco_val = json.load(f)
+                img_name_to_id = {img["file_name"]: img["id"] for img in coco_val["images"]}
                 
-                preds = []
-                if r.boxes is not None and r.masks is not None:
-                    boxes = r.boxes.xyxy.cpu().numpy()
-                    classes = r.boxes.cls.cpu().numpy().astype(int)
-                    scores = r.boxes.conf.cpu().numpy()
+                for r in results:
+                    img_name = Path(r.path).name
+                    img_id = img_name_to_id.get(img_name)
+                    if img_id is None: continue
                     
-                    # Original image shape handling
-                    orig_h, orig_w = r.orig_shape
-                    masks = r.masks.data.cpu().numpy() # shape (N, H, W)
+                    preds = []
+                    if r.boxes is not None and r.masks is not None:
+                        boxes = r.boxes.xyxy.cpu().numpy()
+                        classes = r.boxes.cls.cpu().numpy().astype(int)
+                        scores = r.boxes.conf.cpu().numpy()
+                        
+                        # Original image shape handling
+                        orig_h, orig_w = r.orig_shape
+                        masks = r.masks.data.cpu().numpy() # shape (N, H, W)
+                        
+                        for box, cls, score, mask in zip(boxes, classes, scores, masks):
+                            # Resize mask to original image size
+                            mask_resized = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+                            preds.append({
+                                "category_id": int(cls),
+                                "score": float(score),
+                                "bbox": [float(box[0]), float(box[1]), float(box[2]-box[0]), float(box[3]-box[1])],
+                                "segmentation": (mask_resized > 0.5)
+                            })
+                    predictions_by_image[img_id] = preds
                     
-                    for box, cls, score, mask in zip(boxes, classes, scores, masks):
-                        # Resize mask to original image size
-                        mask_resized = cv2.resize(mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-                        preds.append({
-                            "category_id": int(cls),
-                            "score": float(score),
-                            "bbox": [float(box[0]), float(box[1]), float(box[2]-box[0]), float(box[3]-box[1])],
-                            "segmentation": (mask_resized > 0.5)
-                        })
-                predictions_by_image[img_id] = preds
-                
-            val_metrics = evaluator.evaluate(epoch, predictions_by_image)
+                val_metrics = evaluator.evaluate(epoch, predictions_by_image)
             
         should_stop, is_best = logger.log_epoch(epoch, trainer.epochs, train_stats, val_metrics)
         
         if run_unified and should_stop:
-            print(f"\\n[!] Early stopping triggered by unified evaluator.")
+            print(f"\n[!] Early stopping triggered by unified evaluator.")
             trainer.stop = True
 
     model.add_callback("on_fit_epoch_end", custom_eval_callback)
@@ -293,7 +296,21 @@ def main():
     model.train(**train_kwargs)
     logger.print_final_summary()
 
-    best_weights_path = os.path.join(project, run_name, "weights", "best.pt")
+    best_weights_path = os.path.join(target_out_dir, "weights", "best.pt")
+    last_weights_path = os.path.join(target_out_dir, "weights", "last.pt")
+
+    # Standardize root-level aliases inside target_out_dir
+    import shutil
+    if os.path.exists(best_weights_path):
+        try:
+            shutil.copy2(best_weights_path, os.path.join(target_out_dir, "best_model.pt"))
+        except Exception:
+            pass
+    if os.path.exists(last_weights_path):
+        try:
+            shutil.copy2(last_weights_path, os.path.join(target_out_dir, "last_model.pt"))
+        except Exception:
+            pass
 
     # Run final validation on the test split explicitly for a clean comparison metric.
     # Pass the SAME project/name explicitly so this doesn't fall back to Ultralytics'
@@ -314,11 +331,7 @@ def main():
     print(metrics.results_dict)
 
     print(f"\n[OK] Trained weights saved at: {best_weights_path}")
-    # Also write the path to a small text file so downstream scripts (or you)
-    # don't have to guess/remember it.
-    with open("last_yolo_weights_path.txt", "w") as f:
-        f.write(best_weights_path + "\n")
-    print("[OK] Path also saved to: last_yolo_weights_path.txt")
+    print(f"[OK] Direct alias saved at:   {os.path.join(target_out_dir, 'best_model.pt')}")
 
     if torch.cuda.is_available():
         peak_vram = torch.cuda.max_memory_allocated() / (1024**3)

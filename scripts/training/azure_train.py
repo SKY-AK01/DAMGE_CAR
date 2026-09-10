@@ -211,7 +211,7 @@ def handle_environment_selection(ml_client, force_rebuild=False):
     env_entity = Environment(
         name=env_name,
         version=next_ver,
-        description="Environment for YOLO, Mask R-CNN, Fast R-CNN, Mask2Former, SAM2",
+        description="Environment for YOLO11m-seg, Mask R-CNN, and Mask2Former",
         build=BuildContext(path=".", dockerfile_path="Dockerfile"),
         tags={"docker_hash": current_hash},
     )

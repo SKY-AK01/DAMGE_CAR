@@ -497,6 +497,9 @@ def main():
         last_dir = weights_dir / "last"
         model.save_pretrained(str(last_dir))
         processor.save_pretrained(str(last_dir))
+        legacy_last = target_out_dir / "last_model"
+        model.save_pretrained(str(legacy_last))
+        processor.save_pretrained(str(legacy_last))
 
         if is_best:
             best_dir = weights_dir / "best"

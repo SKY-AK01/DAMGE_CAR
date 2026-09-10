@@ -201,7 +201,7 @@ case "$CHOICE" in
                 --output_dir "${BASE_OUT_DIR}/mask2former"
         fi
 
-        run_step "05" "export_excel" python scripts/evaluation/export_excel_report.py --run_dir "$BASE_OUT_DIR"
+        run_step "05" "compare_models" python scripts/evaluation/compare_models.py --run_dir "$BASE_OUT_DIR" --out_dir "$BASE_OUT_DIR" --non_interactive
         ;;
 
     3)

@@ -9,7 +9,7 @@
 #     to run `pip install torch` inside pip's isolated build sandbox, which
 #     doesn't have pip available in it)
 #   - transformers pinned to 4.46.3 from the start (a newer auto-installed
-#     version enforced a torch>=2.6 requirement that broke OneFormer/Mask2Former
+#     version enforced a torch>=2.6 requirement that broke Mask2Former
 #     loading, even though we're on torch 2.5.1)
 #   - iopath pinned to 0.1.9 after Detectron2 install (SAM2 pulls in 0.1.10,
 #     Detectron2 wants <0.1.10 — direct conflict)
@@ -47,7 +47,7 @@ if command -v nvidia-smi &> /dev/null; then
     nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 else
     echo "[WARNING] No NVIDIA GPU / driver detected. Everything will fall back to CPU"
-    echo "          (very slow for training and for SAM2/MaskDINO in particular)."
+    echo "          (very slow for training in particular)."
 fi
 
 # ---- 2. Virtual environment ---------------------------------------------------
@@ -99,7 +99,7 @@ cd ..
 
 # Pin transformers immediately after GroundingDINO install, since GroundingDINO's
 # requirements.txt pulls in an unpinned (very new) transformers version that
-# enforces torch>=2.6 for torch.load, breaking Mask2Former/OneFormer on torch 2.5.1.
+# enforces torch>=2.6 for torch.load, breaking Mask2Former on torch 2.5.1.
 echo "[*] Pinning transformers to a version compatible with torch 2.5.1..."
 pip install "transformers==4.46.3" --no-build-isolation
 
@@ -129,7 +129,9 @@ print("PyTorch:", torch.__version__, "| CUDA available:", torch.cuda.is_availabl
 
 checks = {
     "cv2": "OpenCV",
-    "ultralytics": "Ultralytics (YOLO)",
+    "torchvision": "TorchVision (Mask R-CNN)",
+    "transformers": "Transformers (Mask2Former)",
+    "ultralytics": "Ultralytics (YOLO11m-seg)",
     "groundingdino": "Grounding DINO",
     "sam2": "SAM 2",
 }
