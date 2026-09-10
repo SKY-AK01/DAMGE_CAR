@@ -503,7 +503,8 @@ def ensure_and_prepare_datasets(logs_dir, use_raw=True, use_external=True):
                 return count
 
             n_ext_images = _count_images(carparts_ext)
-            print(f"[*] external/carparts-seg image count: {n_ext_images}")            if n_ext_images > 100:
+            print(f"[*] external/carparts-seg image count: {n_ext_images}")
+            if n_ext_images > 100:
                 matched_cs_populated = (matched_cs / "images").exists() and _count_images(matched_cs / "images") > 0
                 if not matched_cs_populated:
                     run_cmd_and_log(["python", "scripts/data/match_carparts_seg.py"], log_path, "match_carparts_seg")
